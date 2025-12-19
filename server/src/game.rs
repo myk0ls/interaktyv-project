@@ -2,7 +2,6 @@ use rand::Rng;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashMap;
-use std::f32::consts::TAU;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -24,7 +23,7 @@ pub struct Player {
     pub next_color: String,
 }
 
-/// Free-moving marble (sent by players)
+/// Free-moving marble (shot by players)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Marble {
     pub id: u64,
@@ -39,13 +38,37 @@ pub struct Marble {
     pub owner: Option<u64>, // None for free marbles and chain marbles (shared chain)
 }
 
-/// Marble stored inside the shared chain. Position is derived from angle + chain_center.
+/// Marble stored on the path. `s` is parameter along the path in [0,1].
+/// color == None indicates a gap (removed marble spot).
 #[derive(Debug, Clone)]
 pub struct ChainMarble {
-    pub id: u64,
-    pub angle: f32,    // radians along the orbit
-    pub distance: f32, // radius from chain center
-    pub color: String,
+    pub id: Option<u64>,       // None for gap slots
+    pub s: f32,                // parameter along the path [0..1]
+    pub color: Option<String>, // None => gap
+}
+
+#[derive(Debug)]
+pub struct GameState {
+    pub players: HashMap<SocketAddr, Player>, // connected players keyed by addr
+    pub marbles: Vec<Marble>,                 // free marbles (shot by players)
+    pub chain: Vec<ChainMarble>, // ordered sequence from start (s small) -> end (s close to 1)
+
+    // Bezier control points for horseshoe-shaped path (x,z coordinates)
+    pub p0: (f32, f32),
+    pub p1: (f32, f32),
+    pub p2: (f32, f32),
+    pub p3: (f32, f32),
+
+    // spawn / spacing / movement tuning
+    pub spawn_accum: f32,
+    pub spawn_interval: f32, // seconds between spawns
+    pub marble_diameter: f32,
+    pub spacing_length: f32, // desired arc-length spacing between marbles
+    pub next_player_id: u64,
+    pub next_marble_id: u64,
+
+    // persistent mapping: token -> persistent player (keeps identity across reconnects)
+    pub token_map: HashMap<String, PersistentPlayer>,
 }
 
 /// Persistent player record mapped by token. Kept across disconnects.
@@ -62,57 +85,55 @@ pub struct PersistentPlayer {
     pub addr: Option<SocketAddr>,
 }
 
-#[derive(Debug)]
-pub struct GameState {
-    pub players: HashMap<SocketAddr, Player>, // currently connected players keyed by addr
-    pub marbles: Vec<Marble>,                 // free marbles (shot by players and moving freely)
-    pub chain: Vec<ChainMarble>,              // single shared chain for all players (coop)
-    pub chain_center_x: f32,
-    pub chain_center_z: f32,
-    pub next_player_id: u64,
-    pub next_marble_id: u64,
-
-    // persistent mapping: token -> persistent player (keeps identity across reconnects)
-    pub token_map: HashMap<String, PersistentPlayer>,
-}
-
 impl Default for GameState {
     fn default() -> Self {
+        // Define horseshoe-like cubic Bezier control points.
+        // These are in (x,z) plane. You can tweak them to change shape/scale.
+        // Start near top-left, curve down under players, end top-right.
+        let p0 = (-8.0_f32, 6.0_f32); // start (top-left)
+        let p1 = (-8.0_f32, -4.0_f32); // pulls downward on left side
+        let p2 = (8.0_f32, -4.0_f32); // pulls downward on right side
+        let p3 = (8.0_f32, 6.0_f32); // end (top-right)
+
         let mut gs = GameState {
             players: HashMap::new(),
             marbles: Vec::new(),
             chain: Vec::new(),
-            chain_center_x: 0.0,
-            chain_center_z: 0.0,
+            p0,
+            p1,
+            p2,
+            p3,
+            spawn_accum: 0.0,
+            spawn_interval: 0.6, // spawn one new chain marble every 0.6s (tunable)
+            marble_diameter: 0.6,
+            spacing_length: 0.6 * 1.02, // slightly larger than diameter
             next_player_id: 0,
             next_marble_id: 0,
             token_map: HashMap::new(),
         };
 
-        // initialize a simple shared chain orbiting around chain_center (0,0)
-        // using the debugging/stats parameters you requested
+        // initialize chain along the bezier horseshoe path
         let mut rng = rand::thread_rng();
         let colors = ["red", "green", "blue", "yellow", "purple"];
-        let chain_len = 30usize; // 30 marbles
-        let chain_radius = 4.0_f32;
-        let spacing = TAU / (chain_len as f32);
+        let chain_len = 30usize; // requested
+        let spacing_s = 1.0_f32 / (chain_len as f32); // initial parameter spacing (not arc-accurate)
         info!(
-            "Initializing shared chain: len={}, radius={}, spacing={}",
-            chain_len, chain_radius, spacing
+            "Initializing shared chain (horseshoe) len={} spacing_s={}",
+            chain_len, spacing_s
         );
 
+        // place marbles with s spaced from 0..(chain_len-1)/chain_len (so endpoint is not immediately full)
         for i in 0..chain_len {
             let mid = gs.next_marble_id;
             gs.next_marble_id += 1;
-            let a = spacing * (i as f32);
-            // use rng.random() per previous request
+            // s in [0, 1) but not including 1.0 to avoid immediate removal
+            let s = (i as f32) * spacing_s;
             let color_index = (rng.random::<f32>() * (colors.len() as f32)) as usize;
             let color = colors[color_index % colors.len()].to_string();
             gs.chain.push(ChainMarble {
-                id: mid,
-                angle: a,
-                distance: chain_radius,
-                color,
+                id: Some(mid),
+                s,
+                color: Some(color),
             });
         }
 
@@ -135,7 +156,7 @@ impl GameState {
         // If token provided and exists, restore persistent player
         if let Some(token) = token_opt {
             if let Some(pp) = self.token_map.get_mut(&token) {
-                // If already connected from somewhere else, we still allow reconnect: rebind to new addr
+                // rebind to new addr
                 pp.connected = true;
                 pp.addr = Some(addr);
                 let player = Player {
@@ -286,7 +307,7 @@ impl GameState {
         }
     }
 
-    /// Advance the simulation by dt seconds (physics, lifetime decay). Chain marbles move as a single shared chain.
+    /// Advance the simulation by dt seconds (physics, lifetime decay). Chain marbles move along the bezier path.
     /// Also: detect collisions between free marbles and chain marbles; insert and run color-match removal.
     pub fn update(&mut self, dt: f32) {
         // update free marbles (physics)
@@ -303,24 +324,54 @@ impl GameState {
         self.marbles
             .retain(|m| m.life > 0.0 && m.x.abs() < 200.0 && m.y > -50.0 && m.z.abs() < 200.0);
 
-        // update shared chain marbles: advance along angle (simple movement)
-        let angular_speed = 0.6_f32; // radians per second: how fast chain moves
-        for cm in self.chain.iter_mut() {
-            cm.angle += angular_speed * dt;
-            // normalize angle to 0..TAU
-            if cm.angle > TAU {
-                cm.angle -= TAU;
-            } else if cm.angle < 0.0 {
-                cm.angle += TAU;
-            }
+        // spawn new chain marbles periodically at the start (they start at s=0.0)
+        self.spawn_accum += dt;
+        while self.spawn_accum >= self.spawn_interval {
+            self.spawn_accum -= self.spawn_interval;
+            let mut rng = rand::thread_rng();
+            let color = random_color_with_rng(&mut rng);
+            let id = self.next_marble_id;
+            self.next_marble_id += 1;
+            // push at start (s = 0.0) — will remain at start until equalization moves them within first segment
+            self.chain.push(ChainMarble {
+                id: Some(id),
+                s: 0.0,
+                color: Some(color),
+            });
         }
+
+        // advance chain along the path: increase `s` for each non-gap chain marble
+        let chain_speed = 0.03_f32; // fraction of path per second
+        for cm in self.chain.iter_mut() {
+            // gaps still advance as placeholders so the whole path moves visually (you can change this if desired)
+            cm.s += chain_speed * dt;
+        }
+
+        // remove placeholders or marbles that reached or passed end (s >= 1.0)
+        // keep gaps that are beyond endpoint removed as well
+        self.chain.retain(|cm| cm.s < 1.0);
+
+        // Re-equalize spacing along the path only within contiguous non-gap segments so gaps persist
+        self.equalize_chain_spacing();
+
+        // keep chain sorted by s (ascending)
+        self.chain
+            .sort_by(|a, b| a.s.partial_cmp(&b.s).unwrap_or(std::cmp::Ordering::Equal));
 
         // Collision detection + insertion + match removal
         let mut i = 0usize;
         while i < self.marbles.len() {
             let m = self.marbles[i].clone(); // clone to work with it
             if let Some(coll_idx) = self.find_collision_index(&m) {
-                // insert marble into chain at position after coll_idx
+                // NEW: don't insert if the immediate next slot after coll_idx is a gap.
+                // This prevents filling a hole by shooting into it — shots into gaps are treated as misses.
+                if coll_idx + 1 < self.chain.len() && self.chain[coll_idx + 1].color.is_none() {
+                    // it's a gap region; ignore this collision
+                    i += 1;
+                    continue;
+                }
+
+                // insert marble into chain near coll_idx
                 self.insert_into_chain(m, coll_idx);
                 // remove free marble (swap_remove)
                 self.marbles.swap_remove(i);
@@ -331,7 +382,138 @@ impl GameState {
         }
     }
 
+    /// Re-sample chain so marbles are equally spaced in arc-length, but preserve gaps.
+    /// For each contiguous non-gap segment, anchor by the head (largest s in that segment),
+    /// and place each marble backward by spacing_length.
+    fn equalize_chain_spacing(&mut self) {
+        if self.chain.is_empty() {
+            return;
+        }
+
+        const SAMPLE_STEPS: usize = 64;
+
+        // helper: arc length from 0 to s
+        let arc_len_to = |s: f32, gs: &GameState| -> f32 {
+            if s <= 0.0 {
+                return 0.0;
+            }
+            let steps = SAMPLE_STEPS;
+            let mut length = 0.0_f32;
+            let mut prev = gs.chain_world_pos(0.0);
+            for i in 1..=steps {
+                let t = (i as f32) / (steps as f32) * s;
+                let p = gs.chain_world_pos(t);
+                let dx = p.0 - prev.0;
+                let dz = p.1 - prev.1;
+                length += (dx * dx + dz * dz).sqrt();
+                prev = p;
+            }
+            length
+        };
+
+        // sort indices by s ascending to process segments in path order (tail -> head)
+        let mut order: Vec<usize> = (0..self.chain.len()).collect();
+        order.sort_by(|&a, &b| {
+            self.chain[a]
+                .s
+                .partial_cmp(&self.chain[b].s)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        // find contiguous non-gap segments in the ordered list
+        let mut segments: Vec<Vec<usize>> = Vec::new();
+        let mut current: Vec<usize> = Vec::new();
+        for &idx in order.iter() {
+            if self.chain[idx].color.is_some() {
+                current.push(idx);
+            } else {
+                if !current.is_empty() {
+                    segments.push(current);
+                    current = Vec::new();
+                }
+            }
+        }
+        if !current.is_empty() {
+            segments.push(current);
+        }
+
+        // Process each segment separately
+        let spacing = self.spacing_length.max(0.001);
+
+        for seg in segments.into_iter() {
+            // seg is indices in ascending s (tail->head)
+            // build a vector of (s, id, color)
+            let mut seg_marbles: Vec<(f32, Option<u64>, String)> = seg
+                .iter()
+                .map(|&i| {
+                    let cm = &self.chain[i];
+                    (cm.s, cm.id, cm.color.clone().unwrap_or_default())
+                })
+                .collect();
+
+            if seg_marbles.is_empty() {
+                continue;
+            }
+
+            // compute s_head (max s in segment)
+            let s_head = seg_marbles
+                .iter()
+                .map(|(s, _, _)| *s)
+                .fold(seg_marbles[0].0, |a, b| a.max(b));
+
+            // arc length to head
+            let L_head = arc_len_to(s_head, self);
+
+            // desired L positions head->tail for segment
+            let m = seg_marbles.len();
+            let mut desired_Ls_head_to_tail: Vec<f32> = Vec::with_capacity(m);
+            for i in 0..m {
+                let desired = L_head - (i as f32) * spacing;
+                desired_Ls_head_to_tail.push(desired);
+            }
+
+            // inverse arc length (binary search)
+            let inverse_arc = |L_target: f32, gs: &GameState, L_head: f32| -> f32 {
+                if L_target <= 0.0 {
+                    return 0.0_f32;
+                }
+                let target = if L_target > L_head { L_head } else { L_target };
+
+                let mut low = 0.0_f32;
+                let mut high = 1.0_f32;
+                for _ in 0..24 {
+                    let mid = (low + high) * 0.5;
+                    let lm = arc_len_to(mid, gs);
+                    if lm < target {
+                        low = mid;
+                    } else {
+                        high = mid;
+                    }
+                }
+                (low + high) * 0.5
+            };
+
+            // compute s values head->tail, then reverse to tail->head
+            let mut s_head_to_tail: Vec<f32> = Vec::with_capacity(m);
+            for desired_L in desired_Ls_head_to_tail.iter() {
+                let s_new = if *desired_L <= 0.0 {
+                    0.0_f32
+                } else {
+                    inverse_arc(*desired_L, self, L_head)
+                };
+                s_head_to_tail.push(s_new);
+            }
+            s_head_to_tail.reverse(); // now tail->head
+
+            // assign new s back to self.chain at the corresponding indices (tail->head)
+            for (j, &chain_idx) in seg.iter().enumerate() {
+                self.chain[chain_idx].s = s_head_to_tail[j];
+            }
+        }
+    }
+
     /// Determine index of closest chain marble within collision distance for a given free marble.
+    /// Gaps are ignored.
     fn find_collision_index(&self, marble: &Marble) -> Option<usize> {
         const COLLISION_DISTANCE: f32 = 0.7_f32; // tuning parameter (marble radius ~0.5)
         if self.chain.is_empty() {
@@ -340,7 +522,10 @@ impl GameState {
 
         let mut best: Option<(usize, f32)> = None;
         for (idx, cm) in self.chain.iter().enumerate() {
-            let (cx, cz) = self.chain_world_pos(cm);
+            if cm.color.is_none() {
+                continue; // skip gaps
+            }
+            let (cx, cz) = self.chain_world_pos(cm.s);
             let dx = marble.x - cx;
             let dz = marble.z - cz;
             let dist2 = dx * dx + dz * dz;
@@ -359,134 +544,149 @@ impl GameState {
         best.map(|(idx, _)| idx)
     }
 
-    /// Insert a free marble (world-coordinate) into the chain near collided index.
-    /// Insertion index will be (coll_idx + 1) mod len. New marble angle is midpoint between collided and next marble.
+    /// Insert a free marble into the chain near collided index.
+    /// We insert between coll_idx and coll_idx+1 and set s to midpoint (in s, then re-equalize within that segment).
     fn insert_into_chain(&mut self, marble: Marble, coll_idx: usize) {
         let new_id = marble.id;
         let color = marble.color.clone();
 
         if self.chain.is_empty() {
-            // create chain with single marble
             self.chain.push(ChainMarble {
-                id: new_id,
-                angle: 0.0,
-                distance: 3.0,
-                color,
+                id: Some(new_id),
+                s: 0.0,
+                color: Some(color),
             });
             return;
         }
 
         let len = self.chain.len();
-        let insert_after = coll_idx;
-        let insert_idx = (insert_after + 1) % (len + 1); // if inserting at end, modulo handles it
+        let after = coll_idx;
+        // find next non-gap after `after` to compute a sensible next_s
+        let mut next_s = None;
+        for j in after + 1..len {
+            if self.chain[j].color.is_some() {
+                next_s = Some(self.chain[j].s);
+                break;
+            }
+        }
+        let cur_s = self.chain[after].s;
+        let next_s = next_s.unwrap_or((cur_s + 0.02_f32).min(0.9999_f32));
 
-        // compute angle between collided marble and next marble
-        let cur_angle = self.chain[insert_after % len].angle;
-        let next_angle = if len == 1 {
-            cur_angle + 0.2 // arbitrary small offset when only one marble
-        } else {
-            // next is insert_after+1 mod len
-            self.chain[(insert_after + 1) % len].angle
-        };
-
-        let mid_angle = angle_mid(cur_angle, next_angle);
-
-        // keep same distance as collided marble
-        let distance = self.chain[insert_after % len].distance;
+        let insert_s = (cur_s + next_s) * 0.5_f32;
 
         let new_cm = ChainMarble {
-            id: new_id,
-            angle: normalize_angle(mid_angle),
-            distance,
-            color,
+            id: Some(new_id),
+            s: insert_s,
+            color: Some(color),
         };
 
-        // insert at insert_idx (if insert_idx == len, push)
-        if insert_idx >= self.chain.len() {
-            self.chain.push(new_cm);
-            let idx = self.chain.len() - 1;
-            self.try_remove_matches(idx);
-        } else {
-            self.chain.insert(insert_idx, new_cm);
-            self.try_remove_matches(insert_idx);
-        }
+        self.chain.push(new_cm);
+        // keep sorted by s
+        self.chain
+            .sort_by(|a, b| a.s.partial_cmp(&b.s).unwrap_or(std::cmp::Ordering::Equal));
+
+        // find index of the newly inserted marble (by id)
+        let inserted_idx = self
+            .chain
+            .iter()
+            .position(|c| c.id == Some(new_id))
+            .unwrap_or(0);
+        self.try_remove_matches(inserted_idx);
     }
 
     /// Attempt to remove contiguous match around index. Removes sequence if len >= 3.
-    /// This will handle wrap-around.
+    /// Instead of collapsing the chain, we mark removed positions as gaps (color=None, id=None)
+    /// so visual gaps remain.
     fn try_remove_matches(&mut self, idx: usize) {
         if self.chain.is_empty() {
             return;
         }
         let len = self.chain.len();
-        // clone the color to avoid holding immutable borrow during mutation
-        let color = self.chain[idx].color.clone();
+        if idx >= len {
+            return;
+        }
 
-        // Count left side (excluding idx)
+        // if idx is a gap already, nothing to do
+        if self.chain[idx].color.is_none() {
+            return;
+        }
+
+        // clone color to avoid borrow issues
+        let color = self.chain[idx].color.clone().unwrap();
+
+        // Count left (stop at gaps)
         let mut left_count = 0usize;
         let mut cur = idx;
-        for _ in 0..(len - 1) {
-            let prev = if cur == 0 { len - 1 } else { cur - 1 };
-            if self.chain[prev].color == color {
-                left_count += 1;
-                cur = prev;
+        while cur > 0 {
+            let prev = cur - 1;
+            if let Some(ref c) = self.chain[prev].color {
+                if c == &color {
+                    left_count += 1;
+                    cur = prev;
+                } else {
+                    break;
+                }
             } else {
-                break;
+                break; // gap stops contiguous match
             }
         }
 
-        // Count right side (excluding idx)
+        // Count right (stop at gaps)
         let mut right_count = 0usize;
         cur = idx;
-        for _ in 0..(len - 1) {
-            let next = (cur + 1) % len;
-            if self.chain[next].color == color {
-                right_count += 1;
-                cur = next;
+        while cur + 1 < len {
+            let next = cur + 1;
+            if let Some(ref c) = self.chain[next].color {
+                if c == &color {
+                    right_count += 1;
+                    cur = next;
+                } else {
+                    break;
+                }
             } else {
-                break;
+                break; // gap stops contiguous match
             }
         }
 
         let total = 1 + left_count + right_count;
         if total >= 3 {
-            // determine start and end indices (inclusive), taking wrapping into account
-            let start = (idx + len - left_count) % len;
-            let end = (idx + right_count) % len;
+            // compute start and end indices inclusive
+            let start_idx = if idx >= left_count {
+                idx - left_count
+            } else {
+                0
+            };
+            let end_idx = (idx + right_count).min(len - 1);
 
-            // mark removal flags
-            let mut remove = vec![false; len];
-            let mut i = start;
-            loop {
-                remove[i] = true;
-                if i == end {
-                    break;
-                }
-                i = (i + 1) % len;
+            // Mark range as gaps (preserve s positions so gaps remain)
+            for i in start_idx..=end_idx {
+                self.chain[i].color = None;
+                self.chain[i].id = None;
             }
-
-            // build new chain with elements not removed
-            let mut new_chain = Vec::with_capacity(len - total);
-            for (i, cm) in self.chain.drain(..).enumerate() {
-                if !remove[i] {
-                    new_chain.push(cm);
-                }
-            }
-            info!("Removed {} matching marbles of color {}", total, color);
-            self.chain = new_chain;
+            info!(
+                "Marked {} matching marbles as gaps of color {}",
+                total, color
+            );
         }
     }
 
-    /// Compute world-space x,z of a chain marble
-    fn chain_world_pos(&self, cm: &ChainMarble) -> (f32, f32) {
-        let x = self.chain_center_x + cm.distance * cm.angle.cos();
-        let z = self.chain_center_z + cm.distance * cm.angle.sin();
+    /// Compute world-space x,z of a point along the Bezier path for parameter s in [0..1]
+    fn chain_world_pos(&self, s: f32) -> (f32, f32) {
+        // cubic bezier: B(s) = (1-u)^3 P0 + 3(1-u)^2 u P1 + 3(1-u) u^2 P2 + u^3 P3
+        let u = s.clamp(0.0, 1.0);
+        let iu = 1.0 - u;
+        let w0 = iu * iu * iu;
+        let w1 = 3.0 * iu * iu * u;
+        let w2 = 3.0 * iu * u * u;
+        let w3 = u * u * u;
+        let x = w0 * self.p0.0 + w1 * self.p1.0 + w2 * self.p2.0 + w3 * self.p3.0;
+        let z = w0 * self.p0.1 + w1 * self.p1.1 + w2 * self.p2.1 + w3 * self.p3.1;
         (x, z)
     }
 
     /// Produce a JSON snapshot string of the current state to broadcast.
-    /// This flattens both free marbles and shared chain marbles into a single "marbles" array.
-    /// NOTE: Player structs include loaded_color and next_color so the client can render them.
+    /// This flattens both free marbles and path marbles into a single "marbles" array.
+    /// Gaps are excluded from the snapshot so the client sees holes.
     pub fn snapshot(&self) -> String {
         // players
         let players: Vec<Player> = self.players.values().cloned().collect();
@@ -496,11 +696,13 @@ impl GameState {
 
         // append chain marbles converted to Marble objects with computed world positions
         for cm in self.chain.iter() {
-            let x = self.chain_center_x + cm.distance * cm.angle.cos();
-            let z = self.chain_center_z + cm.distance * cm.angle.sin();
+            if cm.color.is_none() {
+                continue; // gap - don't include a marble
+            }
+            let (x, z) = self.chain_world_pos(cm.s);
             let y = 0.5_f32; // slightly above ground
             marbles.push(Marble {
-                id: cm.id,
+                id: cm.id.unwrap_or(0),
                 x,
                 y,
                 z,
@@ -508,7 +710,7 @@ impl GameState {
                 vy: 0.0,
                 vz: 0.0,
                 life: 9999.0,
-                color: cm.color.clone(),
+                color: cm.color.clone().unwrap_or_else(|| "unknown".to_string()),
                 owner: None,
             });
         }
@@ -520,23 +722,6 @@ impl GameState {
         })
         .to_string()
     }
-}
-
-/// Normalize angle to 0..TAU
-fn normalize_angle(a: f32) -> f32 {
-    let mut x = a % TAU;
-    if x < 0.0 {
-        x += TAU;
-    }
-    x
-}
-
-/// Compute midpoint angle going from a to b in angular sense (handles wrap)
-fn angle_mid(a: f32, b: f32) -> f32 {
-    // compute difference b-a in range 0..TAU
-    let diff = (b - a + TAU) % TAU;
-    let mid = a + diff * 0.5;
-    normalize_angle(mid)
 }
 
 /// Small helper: random color chooser using rng.random()
