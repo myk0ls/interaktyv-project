@@ -5,13 +5,16 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::TcpStream;
 use tokio::sync::{RwLock, mpsc};
+use tokio::time::{Duration, timeout};
 use tokio_tungstenite::{accept_async, tungstenite::Message};
 use tracing::{error, info};
 
 pub type Clients = Arc<RwLock<HashMap<SocketAddr, mpsc::UnboundedSender<Message>>>>;
 
 /// Handle an individual TCP -> WebSocket connection.
-/// This function parses incoming messages and delegates to game APIs (aim/shoot).
+/// Expects the client to send a join message first:
+/// { "type": "join", "token": "<optional-token>" }
+/// Server will reply with a welcome message: { "type": "welcome", "token": "...", "player": { ... } }
 pub async fn handle_connection(
     stream: TcpStream,
     addr: SocketAddr,
@@ -24,17 +27,7 @@ pub async fn handle_connection(
     let (mut ws_sender, mut ws_receiver) = ws_stream.split();
     let (tx, mut rx) = mpsc::unbounded_channel();
 
-    // Store the client sender so other tasks can broadcast to it
-    clients.write().await.insert(addr, tx.clone());
-
-    // create a player in game state
-    {
-        let mut gs = game.write().await;
-        let player = gs.add_player(addr);
-        info!("Added player {} for {}", player.id, addr);
-    }
-
-    // Spawn task to forward outgoing messages to the socket
+    // spawn task to forward outgoing messages to the socket
     let mut send_task = tokio::spawn(async move {
         while let Some(msg) = rx.recv().await {
             if ws_sender.send(msg).await.is_err() {
@@ -43,7 +36,53 @@ pub async fn handle_connection(
         }
     });
 
-    // Handle incoming messages
+    // Wait for a short time for a join message from the client
+    let join_msg = match timeout(Duration::from_secs(5), ws_receiver.next()).await {
+        Ok(Some(Ok(Message::Text(txt)))) => match serde_json::from_str::<serde_json::Value>(&txt) {
+            Ok(v) => Some(v),
+            Err(_) => None,
+        },
+        _ => None,
+    };
+
+    // If no valid join message, close the connection
+    if join_msg.is_none() {
+        let _ = tx.send(Message::Close(Some(
+            tokio_tungstenite::tungstenite::protocol::frame::CloseFrame {
+                code: tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode::Away,
+                reason: "No join message received".into(),
+            },
+        )));
+        send_task.abort();
+        return Ok(());
+    }
+
+    let v = join_msg.unwrap();
+    let token_opt = v
+        .get("token")
+        .and_then(|t| t.as_str())
+        .map(|s| s.to_string());
+
+    // perform join / restore
+    let (token, player) = {
+        let mut gs = game.write().await;
+        gs.join_with_token(token_opt, addr)
+    };
+
+    // Register client for broadcasting now that it's joined
+    clients.write().await.insert(addr, tx.clone());
+
+    // send welcome message (through tx so send_task sends it)
+    let welcome = serde_json::json!({
+        "type": "welcome",
+        "token": token,
+        "player": player,
+    });
+    tx.send(Message::Text(welcome.to_string())).ok();
+
+    info!("Player {} joined from {}", player.id, addr);
+
+    // Now continue handling messages coming from this client
     while let Some(msg) = ws_receiver.next().await {
         match msg {
             Ok(Message::Text(text)) => {
@@ -59,7 +98,6 @@ pub async fn handle_connection(
                             }
                             "shoot" => {
                                 let mut gs = game.write().await;
-                                // handle_shoot returns and pushes the marble internally
                                 gs.handle_shoot(&addr);
                             }
                             _ => {
@@ -91,14 +129,12 @@ pub async fn handle_connection(
         }
     }
 
-    // Clean up
+    // Clean up after disconnect
     send_task.abort();
     clients.write().await.remove(&addr);
     {
         let mut gs = game.write().await;
-        if let Some(p) = gs.remove_player(&addr) {
-            info!("Removed player {} for {}", p.id, addr);
-        }
+        gs.disconnect_by_addr(&addr);
     }
     info!("Client {} removed", addr);
 

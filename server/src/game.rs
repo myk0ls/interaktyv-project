@@ -24,6 +24,7 @@ pub struct Player {
     pub next_color: String,
 }
 
+/// Free-moving marble (sent by players)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Marble {
     pub id: u64,
@@ -47,15 +48,32 @@ pub struct ChainMarble {
     pub color: String,
 }
 
+/// Persistent player record mapped by token. Kept across disconnects.
+#[derive(Debug, Clone)]
+pub struct PersistentPlayer {
+    pub id: u64,
+    pub x: f32,
+    pub y: f32,
+    pub z: f32,
+    pub yaw: f32,
+    pub loaded_color: String,
+    pub next_color: String,
+    pub connected: bool,
+    pub addr: Option<SocketAddr>,
+}
+
 #[derive(Debug)]
 pub struct GameState {
-    pub players: HashMap<SocketAddr, Player>,
-    pub marbles: Vec<Marble>, // free marbles (shot by players and moving freely)
-    pub chain: Vec<ChainMarble>, // single shared chain for all players (coop)
+    pub players: HashMap<SocketAddr, Player>, // currently connected players keyed by addr
+    pub marbles: Vec<Marble>,                 // free marbles (shot by players and moving freely)
+    pub chain: Vec<ChainMarble>,              // single shared chain for all players (coop)
     pub chain_center_x: f32,
     pub chain_center_z: f32,
     pub next_player_id: u64,
     pub next_marble_id: u64,
+
+    // persistent mapping: token -> persistent player (keeps identity across reconnects)
+    pub token_map: HashMap<String, PersistentPlayer>,
 }
 
 impl Default for GameState {
@@ -68,14 +86,15 @@ impl Default for GameState {
             chain_center_z: 0.0,
             next_player_id: 0,
             next_marble_id: 0,
+            token_map: HashMap::new(),
         };
 
         // initialize a simple shared chain orbiting around chain_center (0,0)
         // using the debugging/stats parameters you requested
         let mut rng = rand::thread_rng();
         let colors = ["red", "green", "blue", "yellow", "purple"];
-        let chain_len = 30usize; // UPDATED: 30 marbles
-        let chain_radius = 3.0_f32; // UPDATED: radius 3.0
+        let chain_len = 30usize; // 30 marbles
+        let chain_radius = 4.0_f32;
         let spacing = TAU / (chain_len as f32);
         info!(
             "Initializing shared chain: len={}, radius={}, spacing={}",
@@ -86,7 +105,7 @@ impl Default for GameState {
             let mid = gs.next_marble_id;
             gs.next_marble_id += 1;
             let a = spacing * (i as f32);
-            // use rng.random() per your request (rng.gen() replaced)
+            // use rng.random() per previous request
             let color_index = (rng.random::<f32>() * (colors.len() as f32)) as usize;
             let color = colors[color_index % colors.len()].to_string();
             gs.chain.push(ChainMarble {
@@ -106,42 +125,63 @@ impl GameState {
         Self::default()
     }
 
-    /// Add a player for an address, returning the created Player.
-    /// First two players receive fixed offsets so a two-player coop layout is stable.
-    pub fn add_player(&mut self, addr: SocketAddr) -> Player {
+    /// Restore or create a player by token and bind it to addr.
+    /// Returns (token, Player) — token will be newly generated if not provided or not found.
+    pub fn join_with_token(
+        &mut self,
+        token_opt: Option<String>,
+        addr: SocketAddr,
+    ) -> (String, Player) {
+        // If token provided and exists, restore persistent player
+        if let Some(token) = token_opt {
+            if let Some(pp) = self.token_map.get_mut(&token) {
+                // If already connected from somewhere else, we still allow reconnect: rebind to new addr
+                pp.connected = true;
+                pp.addr = Some(addr);
+                let player = Player {
+                    id: pp.id,
+                    x: pp.x,
+                    y: pp.y,
+                    z: pp.z,
+                    yaw: pp.yaw,
+                    loaded_color: pp.loaded_color.clone(),
+                    next_color: pp.next_color.clone(),
+                };
+                self.players.insert(addr, player.clone());
+                info!("Restored player id={} from token {}", pp.id, token);
+                return (token, player);
+            }
+        }
+
+        // Otherwise, create a new persistent player
+        let mut rng = rand::thread_rng();
         let id = self.next_player_id;
         self.next_player_id += 1;
 
         // spawn position:
-        // - first connected player -> fixed left offset (-2.0, 0.0)
-        // - second connected player -> fixed right offset (2.0, 0.0)
-        // - further players -> small random offset as before
-        let (px, pz) = match self.players.len() {
-            0 => {
-                // player 1
-                (-2.0_f32, 0.0_f32)
-            }
-            1 => {
-                // player 2
-                (2.0_f32, 0.0_f32)
-            }
+        // - first connected persistent player -> fixed left offset (-2.0, 0.0)
+        // - second connected persistent player -> fixed right offset (2.0, 0.0)
+        // - further players -> small random offset
+        let connected_count = self.token_map.values().filter(|pp| pp.connected).count();
+        let (px, pz) = match connected_count {
+            0 => (-2.0_f32, 0.0_f32),
+            1 => (2.0_f32, 0.0_f32),
             _ => {
-                // fallback/random for additional players
-                let mut rng = rand::thread_rng();
                 let angle = (id as f32) * 0.618;
-                // use rng.random() as requested
                 let random_val: f32 = rng.random();
                 let radius = 2.0 + (random_val * 2.0);
                 (radius * angle.sin(), radius * angle.cos())
             }
         };
 
-        // assign initial loaded/next colors using rng.random()
-        let mut rng = rand::thread_rng();
+        // pick loaded/next colors
         let loaded = random_color_with_rng(&mut rng);
         let next = random_color_with_rng(&mut rng);
 
-        let player = Player {
+        // generate token
+        let token = generate_token(&mut rng);
+
+        let persistent = PersistentPlayer {
             id,
             x: px,
             y: 0.0,
@@ -149,24 +189,52 @@ impl GameState {
             yaw: 0.0,
             loaded_color: loaded.clone(),
             next_color: next.clone(),
+            connected: true,
+            addr: Some(addr),
         };
-        info!(
-            "Added player id={} at ({:.2},{:.2}) loaded={} next={}",
-            player.id, player.x, player.z, loaded, next
-        );
+        self.token_map.insert(token.clone(), persistent.clone());
+
+        let player = Player {
+            id,
+            x: px,
+            y: 0.0,
+            z: pz,
+            yaw: 0.0,
+            loaded_color: loaded,
+            next_color: next,
+        };
         self.players.insert(addr, player.clone());
-        player
+
+        info!("Created new persistent player id={} token={}", id, token);
+        (token, player)
     }
 
-    /// Remove a player by address.
-    pub fn remove_player(&mut self, addr: &SocketAddr) -> Option<Player> {
-        self.players.remove(addr)
+    /// Mark persistent player disconnected by addr (keeps token mapping so reconnect can restore).
+    pub fn disconnect_by_addr(&mut self, addr: &SocketAddr) {
+        if let Some(p) = self.players.remove(addr) {
+            // find persistent entry with same id and mark disconnected
+            for (_token, pp) in self.token_map.iter_mut() {
+                if pp.id == p.id {
+                    pp.connected = false;
+                    pp.addr = None;
+                    info!("Player id={} marked disconnected (addr={})", pp.id, addr);
+                    break;
+                }
+            }
+        }
     }
 
-    /// Update player's yaw for aiming.
+    /// Update player's yaw for aiming (addr refers to current connection address).
     pub fn handle_aim(&mut self, addr: &SocketAddr, yaw: f32) {
         if let Some(p) = self.players.get_mut(addr) {
             p.yaw = yaw;
+            // also update persistent
+            for (_token, pp) in self.token_map.iter_mut() {
+                if Some(addr.clone()) == pp.addr {
+                    pp.yaw = yaw;
+                    break;
+                }
+            }
         }
     }
 
@@ -185,9 +253,17 @@ impl GameState {
 
             // rotate queue: loaded <- next, next <- random
             p.loaded_color = p.next_color.clone();
-            // use rng.random() for next color
             let mut rng = rand::thread_rng();
             p.next_color = random_color_with_rng(&mut rng);
+
+            // update persistent record too
+            for (_token, pp) in self.token_map.iter_mut() {
+                if Some(addr.clone()) == pp.addr {
+                    pp.loaded_color = p.loaded_color.clone();
+                    pp.next_color = p.next_color.clone();
+                    break;
+                }
+            }
 
             info!("Player {} fired marble id={} color={}", p.id, mid, color);
 
@@ -398,8 +474,6 @@ impl GameState {
             }
             info!("Removed {} matching marbles of color {}", total, color);
             self.chain = new_chain;
-            // Note: after removal, you might want to apply chain collapse logic (neighbors come together)
-            // or spawn score events. That can be added later.
         }
     }
 
@@ -412,7 +486,7 @@ impl GameState {
 
     /// Produce a JSON snapshot string of the current state to broadcast.
     /// This flattens both free marbles and shared chain marbles into a single "marbles" array.
-    /// NOTE: Player structs now include loaded_color and next_color so the client can render them.
+    /// NOTE: Player structs include loaded_color and next_color so the client can render them.
     pub fn snapshot(&self) -> String {
         // players
         let players: Vec<Player> = self.players.values().cloned().collect();
@@ -448,14 +522,6 @@ impl GameState {
     }
 }
 
-// helper sin/cos where yaw is radians, with x = sin(yaw), z = cos(yaw)
-fn yaw_sin(yaw: f32) -> f32 {
-    yaw.sin()
-}
-fn yaw_cos(yaw: f32) -> f32 {
-    yaw.cos()
-}
-
 /// Normalize angle to 0..TAU
 fn normalize_angle(a: f32) -> f32 {
     let mut x = a % TAU;
@@ -478,4 +544,18 @@ fn random_color_with_rng(rng: &mut impl Rng) -> String {
     let colors = ["red", "green", "blue", "yellow", "purple"];
     let idx = (rng.random::<f32>() * (colors.len() as f32)) as usize;
     colors[idx % colors.len()].to_string()
+}
+
+/// Generate a simple hex token using RNG
+fn generate_token(rng: &mut impl Rng) -> String {
+    let n = rng.random::<u128>();
+    format!("{:032x}", n)
+}
+
+/// helper sin/cos where yaw is radians, with x = sin(yaw), z = cos(yaw)
+fn yaw_sin(yaw: f32) -> f32 {
+    yaw.sin()
+}
+fn yaw_cos(yaw: f32) -> f32 {
+    yaw.cos()
 }

@@ -12,6 +12,10 @@ export class WebSocketClient {
     this.eventHandlers = {};
     this.isConnected = false;
 
+    // read token from localStorage (if present)
+    this.clientTokenKey = this.options.clientTokenKey || "zuma_token";
+    this.token = localStorage.getItem(this.clientTokenKey);
+
     this.connect();
   }
 
@@ -36,6 +40,13 @@ export class WebSocketClient {
       // Initialize activity tracker immediately on connect
       this.lastPong = Date.now();
 
+      // Immediately send join with token (if any)
+      const joinMsg = {
+        type: "join",
+        token: this.token || null,
+      };
+      this.send(joinMsg);
+
       while (this.messageQueue.length > 0) {
         const message = this.messageQueue.shift();
         this.send(message);
@@ -46,8 +57,6 @@ export class WebSocketClient {
     };
 
     this.ws.onmessage = (event) => {
-      console.log("Message received:", event.data);
-
       // Try to parse JSON messages
       let data = event.data;
       try {
@@ -56,8 +65,22 @@ export class WebSocketClient {
         // Not JSON, use as-is
       }
 
+      // Handle welcome: store server-issued token and player info
+      if (data && data.type === "welcome") {
+        if (data.token) {
+          this.token = data.token;
+          try {
+            localStorage.setItem(this.clientTokenKey, this.token);
+          } catch (e) {
+            console.warn("Failed to persist token:", e);
+          }
+        }
+        this.trigger("welcome", data);
+        return;
+      }
+
       // Handle ping/pong for heartbeat
-      if (data.type === "pong") {
+      if (data && data.type === "pong") {
         this.lastPong = Date.now();
         return;
       }
@@ -66,7 +89,7 @@ export class WebSocketClient {
       this.trigger("message", data);
 
       // Trigger typed message handlers
-      if (data.type) {
+      if (data && data.type) {
         this.trigger(data.type, data);
       }
     };
