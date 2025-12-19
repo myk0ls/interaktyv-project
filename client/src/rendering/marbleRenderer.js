@@ -11,6 +11,12 @@ export class MarbleRenderer {
     this.marbles = new Map(); // id -> { mesh }
     this.geometry = new THREE.SphereGeometry(0.2, 8, 8);
     this.material = new THREE.MeshStandardMaterial({ color: 0xffcc00 });
+
+    this.red = new THREE.MeshStandardMaterial({ color: 0xff0000 });
+    this.blue = new THREE.MeshStandardMaterial({ color: 0x0000ff });
+    this.green = new THREE.MeshStandardMaterial({ color: 0x00ff00 });
+    this.yellow = new THREE.MeshStandardMaterial({ color: 0xffff00 });
+    this.purple = new THREE.MeshStandardMaterial({ color: 0xff00ff });
   }
 
   update(marblesArray) {
@@ -24,7 +30,29 @@ export class MarbleRenderer {
 
       let entry = this.marbles.get(m.id);
       if (!entry) {
-        const mesh = new THREE.Mesh(this.geometry, this.material.clone());
+        var entryColor;
+
+        switch (m.color) {
+          case "red":
+            entryColor = this.red;
+            break;
+          case "blue":
+            entryColor = this.blue;
+            break;
+          case "green":
+            entryColor = this.green;
+            break;
+          case "yellow":
+            entryColor = this.yellow;
+            break;
+          case "purple":
+            entryColor = this.purple;
+            break;
+          default:
+            entryColor = this.material;
+        }
+
+        const mesh = new THREE.Mesh(this.geometry, entryColor);
         mesh.castShadow = true;
         mesh.receiveShadow = false;
         this.scene.add(mesh);
