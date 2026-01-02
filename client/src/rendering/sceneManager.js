@@ -1,57 +1,112 @@
 import * as THREE from "three";
 import { PlayerRenderer } from "./playerRenderer.js";
 import { MarbleRenderer } from "./marbleRenderer.js";
+import { UIHandler } from "./uiHandler.js";
 
+/*
+  SceneManager
+  - container: DOM element to append renderer.domElement into (defaults to body)
+  - networkClient: optional WebSocketClient-like instance (has .on and .send)
+*/
 export default class SceneManager {
-  // scene;
-  // width;
-  // height;
-  // camera;
-  // renderer;
-  // controls = false;
+  constructor({ container = document.body, networkClient = null } = {}) {
+    this.container = container;
+    this.network = networkClient; // may be null
 
-  constructor(domElement = document.getElementById("gl_context")) {
-    //scene
+    // scene
     this.scene = new THREE.Scene();
     this.scene.background = new THREE.Color(0xa8def0);
 
-    //heightwidth
-    this.width = window.innerWidth;
-    this.height = window.innerHeight;
-
-    //camera
+    // camera
+    const w = window.innerWidth;
+    const h = window.innerHeight;
     this.camera = new THREE.PerspectiveCamera(
       75,
-      window.innerWidth / window.innerHeight,
+      w / Math.max(1, h),
       0.1,
       1000,
     );
-
     this.camera.position.y = 5;
     this.camera.position.z = 1;
     this.camera.rotateX(-1.4);
 
-    //renderer
-    this.renderer = new THREE.WebGLRenderer();
-    this.renderer.setSize(window.innerWidth, window.innerHeight);
-    this.renderer.setPixelRatio(window.devicePixelRatio);
+    // renderer (fixed order)
+    this.renderer = new THREE.WebGLRenderer({ antialias: true });
+
+    // clamp DPR to avoid huge backing buffers on high-DPI displays
+    const DPR = Math.min(window.devicePixelRatio || 1, 2);
+    this.renderer.setPixelRatio(DPR);
+
+    // now set the canvas size (uses the DPR to set backing-store size)
+    this.renderer.setSize(w, h);
+
     this.renderer.shadowMap.enabled = true;
 
-    document.body.appendChild(this.renderer.domElement);
+    // append canvas BEFORE UI so overlay z-index is above canvas
+    this.container.appendChild(this.renderer.domElement);
+    this._ensureCanvasVisible(this.renderer.domElement);
 
-    //listeners
-    window.addEventListener("resize", (e) => this.onWindowResize(e), false);
-
+    // lights & floor
     this.initLights();
     this.initFloor();
 
+    // renderers for game objects
     this.playerRenderer = new PlayerRenderer(this.scene);
     this.marbleRenderer = new MarbleRenderer(this.scene);
+
+    // create UI AFTER the renderer is on the page.
+    // pass networkClient into onSendChat so we don't reference an undefined global.
+    this.ui = new UIHandler({
+      parent: document.body,
+      randomScoreIntervalMs: 5000,
+      // send via the provided network client if present
+      onSendChat: (text) => {
+        if (this.network && typeof this.network.send === "function") {
+          this.network.send({ type: "chat", text });
+        } else {
+          console.warn("No network client available to send chat");
+        }
+      },
+    });
+
+    // after creating UIHandler instance:
+    document.querySelector(".ui-overlay")?.classList.add("ui-scale-2x");
+
+    // bind network to UI only if available
+    if (this.network && typeof this.network.on === "function") {
+      this.ui.bindWebSocketClient(this.network);
+
+      // server chat -> UI
+      this.network.on("message", (data) => {
+        if (data && data.type === "chat") {
+          this.ui.addChatMessage(data.author || "Peer", data.text || "");
+        }
+      });
+
+      // update demo score from server state messages
+      this.network.on("state", (state) => {
+        const demoScore = Math.floor(Math.random() * 301);
+        this.ui.setScore(demoScore);
+      });
+    } else {
+      // no network: show welcome message locally
+      this.ui.addChatMessage(
+        "System",
+        "No network client connected (local mode).",
+      );
+    }
+
+    // window resize
+    window.addEventListener("resize", (e) => this.onWindowResize(e), false);
+
+    // simple clock and start animate loop
+    this._lastTime = performance.now();
+    this._rafId = null;
+    this.start();
   }
 
   initLights() {
     this.scene.add(new THREE.AmbientLight(0xffffff, 0.7));
-
     const sun = new THREE.DirectionalLight(0xffffff, 1);
     sun.position.set(-60, 100, -10);
     sun.castShadow = true;
@@ -63,9 +118,12 @@ export default class SceneManager {
     tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
     tex.repeat.set(10, 10);
 
+    const greyMaterial = new THREE.MeshStandardMaterial({ color: 0x808080 });
+
     const floor = new THREE.Mesh(
       new THREE.PlaneGeometry(80, 80),
-      new THREE.MeshStandardMaterial({ map: tex }),
+      //new THREE.MeshStandardMaterial({ map: tex }),
+      greyMaterial,
     );
 
     floor.rotation.x = -Math.PI / 2;
@@ -73,29 +131,59 @@ export default class SceneManager {
     this.scene.add(floor);
   }
 
+  // public update called with external gameState if you have it (keeps renderers in sync)
   update(dt, gameState) {
-    this.playerRenderer.update(gameState.players);
-    this.marbleRenderer.update(gameState.marbles);
+    // protect against missing gameState
+    if (gameState && gameState.players) {
+      this.playerRenderer.update(gameState.players);
+    }
+    if (gameState && gameState.marbles) {
+      this.marbleRenderer.update(gameState.marbles);
+    }
   }
 
   render() {
     this.renderer.render(this.scene, this.camera);
   }
 
-  onWindowResize(e) {
+  // ---------- animation loop ----------
+  start() {
+    if (this._rafId) return;
+    this._lastTime = performance.now();
+    const loop = (t) => {
+      const dt = (t - this._lastTime) / 1000;
+      this._lastTime = t;
+      // If you have authoritative game state, you may call update here with it.
+      // For now just render and let external code call SceneManager.update when it receives 'state'.
+      this.render();
+      this._rafId = requestAnimationFrame(loop);
+    };
+    this._rafId = requestAnimationFrame(loop);
+  }
+
+  stop() {
+    if (this._rafId) cancelAnimationFrame(this._rafId);
+    this._rafId = null;
+  }
+
+  onWindowResize() {
     this.width = window.innerWidth;
-    //this.height = Math.floor(window.innerHeight - window.innerHeight * 0.3);
     this.height = window.innerHeight;
-    this.camera.aspect = this.width / this.height;
+    this.camera.aspect = this.width / Math.max(1, this.height);
     this.camera.updateProjectionMatrix();
     this.renderer.setSize(this.width, this.height);
   }
 
-  onLeaveCanvas(e) {
-    this.controls.enabled = false;
-  }
-
-  onEnterCanvas(e) {
-    this.controls.enabled = true;
+  // Utility to ensure canvas is full-screen and behind UI
+  _ensureCanvasVisible(rendererDomElement) {
+    if (!rendererDomElement) return;
+    rendererDomElement.style.display = "block";
+    rendererDomElement.style.position = "fixed";
+    rendererDomElement.style.inset = "0";
+    rendererDomElement.style.width = "100%";
+    rendererDomElement.style.height = "100%";
+    rendererDomElement.style.zIndex = "0";
+    // ensure body has no margin to avoid scrollbars
+    document.body.style.margin = "0";
   }
 }
