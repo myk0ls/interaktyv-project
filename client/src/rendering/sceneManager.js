@@ -50,6 +50,8 @@ export default class SceneManager {
     this.initLights();
     this.initFloor();
 
+    this.testCurve();
+
     // renderers for game objects
     this.playerRenderer = new PlayerRenderer(this.scene);
     this.marbleRenderer = new MarbleRenderer(this.scene);
@@ -140,6 +142,10 @@ export default class SceneManager {
     if (gameState && gameState.marbles) {
       this.marbleRenderer.update(gameState.marbles);
     }
+
+    // Interpolate positions every frame for smooth movement
+    this.playerRenderer.interpolate(dt);
+    this.marbleRenderer.interpolate(dt);
   }
 
   render() {
@@ -185,5 +191,19 @@ export default class SceneManager {
     rendererDomElement.style.zIndex = "0";
     // ensure body has no margin to avoid scrollbars
     document.body.style.margin = "0";
+  }
+
+  async testCurve() {
+    const data = await fetch("/paths/zuma_path.json").then((r) => r.json());
+    const points = data.points.map((p) => new THREE.Vector3(...p));
+
+    console.log(points);
+
+    const line = new THREE.Line(
+      new THREE.BufferGeometry().setFromPoints(points),
+      new THREE.LineBasicMaterial({ color: 0xff0000 }),
+    );
+
+    this.scene.add(line);
   }
 }

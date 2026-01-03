@@ -2,7 +2,9 @@ use rand::Rng;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashMap;
+use std::fs;
 use std::net::SocketAddr;
+use std::path;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::info;
@@ -82,6 +84,12 @@ pub struct PersistentPlayer {
     pub addr: Option<SocketAddr>,
 }
 
+#[derive(Serialize, Deserialize)]
+struct ChainPath {
+    name: String,
+    points: Vec<(f32, f32, f32)>,
+}
+
 impl Default for GameState {
     fn default() -> Self {
         let mut gs = GameState {
@@ -104,15 +112,17 @@ impl Default for GameState {
 
         // Generate circular two-row path within [-8,8] bounds; avoid players.
         let mut rng = rand::thread_rng();
-        gs.generate_two_ring_path(&mut rng, 6, (-8.0, 8.0), (-8.0, 8.0), 200);
+        //gs.generate_two_ring_path(&mut rng, 6, (-8.0, 8.0), (-8.0, 8.0), 200);
+
+        gs.read_path("paths/zuma_path.json");
 
         // initial chain
         let colors = ["red", "green", "blue", "yellow", "purple"];
-        let chain_len = 80usize;
+        let chain_len = 15usize;
         for i in 0..chain_len {
             let mid = gs.next_marble_id;
             gs.next_marble_id += 1;
-            let s = (i as f32) / (chain_len as f32);
+            let s = 0.0;
             let color_index = (rng.random::<f32>() * (colors.len() as f32)) as usize;
             let color = colors[color_index % colors.len()].to_string();
             gs.chain.push(ChainMarble {
@@ -131,181 +141,15 @@ impl GameState {
         Self::default()
     }
 
-    /// Generate two concentric rings (outer and inner) joined to center.
-    /// - n_points: number of points used to sample each ring (higher -> smoother)
-    /// - x_range, z_range: permitted bounds (clamped)
-    /// - attempts: attempts to regenerate to avoid players
-    fn generate_two_ring_path(
-        &mut self,
-        rng: &mut impl Rng,
-        n_points: usize,
-        x_range: (f32, f32),
-        _z_range: (f32, f32),
-        attempts: usize,
-    ) {
-        // positions to avoid (players). Use persistent and connected players; fallback debug positions if empty.
-        let mut avoid_positions: Vec<(f32, f32)> = Vec::new();
-        for pp in self.token_map.values() {
-            avoid_positions.push((pp.x, pp.z));
-        }
-        for p in self.players.values() {
-            avoid_positions.push((p.x, p.z));
-        }
-        if avoid_positions.is_empty() {
-            avoid_positions.push((0.0, 2.0));
-            avoid_positions.push((0.0, -2.0));
-        }
+    fn read_path(&mut self, path_json: &str) {
+        let string_data = fs::read_to_string(path_json).unwrap();
 
-        let player_radius = 0.25_f32;
-        let margin = 0.6_f32;
-        let avoid_dist = player_radius + margin;
-        let avoid_dist_sq = avoid_dist * avoid_dist;
+        let path: ChainPath = serde_json::from_str(&string_data).unwrap();
 
-        // Choose radii such that path stays outside player positions (players at radius 2 roughly)
-        // pick inner_radius >= 3.0, outer_radius >= inner + gap
-        let inner_radius_min = 3.0_f32;
-        let outer_radius_min = inner_radius_min + 1.5_f32;
-
-        for _ in 0..attempts {
-            // jitter radii and center a bit within bounds
-            let inner_radius = inner_radius_min + rng.random::<f32>() * 1.0; // 3..4
-            let outer_radius = outer_radius_min + rng.random::<f32>() * 1.5; // ~4.5..6.0
-
-            // center near (0,0) but allow slight jitter (keep within [-2,2] maybe)
-            let cx = (rng.random::<f32>() - 0.5) * 1.0; // -0.5..0.5
-            let cz = (rng.random::<f32>() - 0.5) * 1.0;
-
-            // sample outer ring starting at top-left-ish angle (3*pi/4) and go full circle
-            let outer_samples = n_points.max(24);
-            let inner_samples = (outer_samples as f32 * 0.75) as usize; // slightly fewer inner samples
-
-            let mut samples: Vec<(f32, f32)> = Vec::new();
-            // Outer ring
-            for i in 0..outer_samples {
-                let a = (i as f32) / (outer_samples as f32) * std::f32::consts::TAU
-                    + std::f32::consts::FRAC_PI_4; // start offset
-                let x = cx + outer_radius * a.cos();
-                let z = cz + outer_radius * a.sin();
-                samples.push((x, z));
-            }
-            // Inner ring (phase shift so marbles look staggered)
-            for i in 0..inner_samples {
-                let a = (i as f32) / (inner_samples as f32) * std::f32::consts::TAU
-                    + std::f32::consts::FRAC_PI_4
-                    + 0.5;
-                let x = cx + inner_radius * a.cos();
-                let z = cz + inner_radius * a.sin();
-                samples.push((x, z));
-            }
-            // radial inward segment from inner ring end to center (0,0)
-            let radial_steps = 20usize;
-            for i in 1..=radial_steps {
-                let t = (i as f32) / (radial_steps as f32);
-                // last inner sample
-                let last = samples.last().copied().unwrap_or((cx + inner_radius, cz));
-                let x = last.0 * (1.0 - t) + cx * t;
-                let z = last.1 * (1.0 - t) + cz * t;
-                samples.push((x, z));
-            }
-            // finally center
-            samples.push((0.0, 0.0));
-
-            // validate samples are within x_range and avoid players
-            let mut valid = true;
-            for &(sx, sz) in samples.iter() {
-                if sx < x_range.0 - 0.01 || sx > x_range.1 + 0.01 {
-                    valid = false;
-                    break;
-                }
-                for &(px, pz) in avoid_positions.iter() {
-                    let dx = sx - px;
-                    let dz = sz - pz;
-                    if dx * dx + dz * dz < avoid_dist_sq {
-                        valid = false;
-                        break;
-                    }
-                }
-                if !valid {
-                    break;
-                }
-            }
-
-            if valid {
-                // accept and build samples/cum_lengths
-                self.path_points = vec![
-                    (cx - outer_radius, cz + outer_radius),
-                    (cx - inner_radius, cz - inner_radius),
-                ]; // small descriptor for debug
-                self.build_samples_from_points(samples);
-                info!(
-                    "Generated two-ring path center approx ({:.2},{:.2}), inner_r {:.2}, outer_r {:.2}",
-                    cx, cz, inner_radius, outer_radius
-                );
-                return;
-            }
-        }
-
-        // fallback to safe rings (no wiggle) if attempts failed
-        let inner_radius = inner_radius_min;
-        let outer_radius = outer_radius_min;
-        let cx = 0.0_f32;
-        let cz = 0.0_f32;
-        let mut samples = Vec::new();
-        let outer_samples = n_points.max(24);
-        for i in 0..outer_samples {
-            let a = (i as f32) / (outer_samples as f32) * std::f32::consts::TAU
-                + std::f32::consts::FRAC_PI_4;
-            samples.push((cx + outer_radius * a.cos(), cz + outer_radius * a.sin()));
-        }
-        for i in 0..(outer_samples * 3 / 4) {
-            let a = (i as f32) / ((outer_samples * 3 / 4) as f32) * std::f32::consts::TAU
-                + std::f32::consts::FRAC_PI_4
-                + 0.5;
-            samples.push((cx + inner_radius * a.cos(), cz + inner_radius * a.sin()));
-        }
-        for i in 1..=20 {
-            let t = (i as f32) / 20.0;
-            let last = samples.last().copied().unwrap_or((cx + inner_radius, cz));
-            samples.push((last.0 * (1.0 - t), last.1 * (1.0 - t)));
-        }
-        samples.push((0.0, 0.0));
-        self.build_samples_from_points(samples);
-        info!("Fell back to default two-ring path");
-    }
-
-    /// Build densely-sampled `samples` and `cum_lengths` from given polyline control sample points (which may already be dense).
-    fn build_samples_from_points(&mut self, pts: Vec<(f32, f32)>) {
-        // For smoother motion, resample the provided points with linear interpolation to a fixed resolution per segment.
-        // We'll create 'samples' with approximately `res_per_unit` samples per unit length.
-        let res_per_unit = 6.0_f32; // sampling density (increase for smoother)
         let mut samples: Vec<(f32, f32)> = Vec::new();
 
-        let mut total_len = 0.0_f32;
-        // compute segment lengths
-        for i in 0..pts.len() - 1 {
-            let a = pts[i];
-            let b = pts[i + 1];
-            let dx = b.0 - a.0;
-            let dz = b.1 - a.1;
-            let seg_len = (dx * dx + dz * dz).sqrt();
-            let n_steps = ((seg_len * res_per_unit).max(2.0)) as usize;
-            for step in 0..n_steps {
-                let t = (step as f32) / (n_steps as f32);
-                let x = a.0 * (1.0 - t) + b.0 * t;
-                let z = a.1 * (1.0 - t) + b.1 * t;
-                if samples
-                    .last()
-                    .map(|s| (s.0 - x).abs() + (s.1 - z).abs() > 1e-6)
-                    .unwrap_or(true)
-                {
-                    samples.push((x, z));
-                }
-            }
-            total_len += ((b.0 - a.0) * (b.0 - a.0) + (b.1 - a.1) * (b.1 - a.1)).sqrt();
-        }
-        // push final point
-        if let Some(&last) = pts.last() {
-            samples.push(last);
+        for point in path.points {
+            samples.push((point.0, point.2));
         }
 
         // build cumulative lengths
@@ -337,6 +181,213 @@ impl GameState {
             1.0
         };
     }
+
+    /// Generate two concentric rings (outer and inner) joined to center.
+    /// - n_points: number of points used to sample each ring (higher -> smoother)
+    /// - x_range, z_range: permitted bounds (clamped)
+    /// - attempts: attempts to regenerate to avoid players
+    // fn generate_two_ring_path(
+    //     &mut self,
+    //     rng: &mut impl Rng,
+    //     n_points: usize,
+    //     x_range: (f32, f32),
+    //     _z_range: (f32, f32),
+    //     attempts: usize,
+    // ) {
+    //     // positions to avoid (players). Use persistent and connected players; fallback debug positions if empty.
+    //     let mut avoid_positions: Vec<(f32, f32)> = Vec::new();
+    //     for pp in self.token_map.values() {
+    //         avoid_positions.push((pp.x, pp.z));
+    //     }
+    //     for p in self.players.values() {
+    //         avoid_positions.push((p.x, p.z));
+    //     }
+    //     if avoid_positions.is_empty() {
+    //         avoid_positions.push((0.0, 2.0));
+    //         avoid_positions.push((0.0, -2.0));
+    //     }
+
+    //     let player_radius = 0.25_f32;
+    //     let margin = 0.6_f32;
+    //     let avoid_dist = player_radius + margin;
+    //     let avoid_dist_sq = avoid_dist * avoid_dist;
+
+    //     // Choose radii such that path stays outside player positions (players at radius 2 roughly)
+    //     // pick inner_radius >= 3.0, outer_radius >= inner + gap
+    //     let inner_radius_min = 3.0_f32;
+    //     let outer_radius_min = inner_radius_min + 1.5_f32;
+
+    //     for _ in 0..attempts {
+    //         // jitter radii and center a bit within bounds
+    //         let inner_radius = inner_radius_min + rng.random::<f32>() * 1.0; // 3..4
+    //         let outer_radius = outer_radius_min + rng.random::<f32>() * 1.5; // ~4.5..6.0
+
+    //         // center near (0,0) but allow slight jitter (keep within [-2,2] maybe)
+    //         let cx = (rng.random::<f32>() - 0.5) * 1.0; // -0.5..0.5
+    //         let cz = (rng.random::<f32>() - 0.5) * 1.0;
+
+    //         // sample outer ring starting at top-left-ish angle (3*pi/4) and go full circle
+    //         let outer_samples = n_points.max(24);
+    //         let inner_samples = (outer_samples as f32 * 0.75) as usize; // slightly fewer inner samples
+
+    //         let mut samples: Vec<(f32, f32)> = Vec::new();
+    //         // Outer ring
+    //         for i in 0..outer_samples {
+    //             let a = (i as f32) / (outer_samples as f32) * std::f32::consts::TAU
+    //                 + std::f32::consts::FRAC_PI_4; // start offset
+    //             let x = cx + outer_radius * a.cos();
+    //             let z = cz + outer_radius * a.sin();
+    //             samples.push((x, z));
+    //         }
+    //         // Inner ring (phase shift so marbles look staggered)
+    //         for i in 0..inner_samples {
+    //             let a = (i as f32) / (inner_samples as f32) * std::f32::consts::TAU
+    //                 + std::f32::consts::FRAC_PI_4
+    //                 + 0.5;
+    //             let x = cx + inner_radius * a.cos();
+    //             let z = cz + inner_radius * a.sin();
+    //             samples.push((x, z));
+    //         }
+    //         // radial inward segment from inner ring end to center (0,0)
+    //         let radial_steps = 20usize;
+    //         for i in 1..=radial_steps {
+    //             let t = (i as f32) / (radial_steps as f32);
+    //             // last inner sample
+    //             let last = samples.last().copied().unwrap_or((cx + inner_radius, cz));
+    //             let x = last.0 * (1.0 - t) + cx * t;
+    //             let z = last.1 * (1.0 - t) + cz * t;
+    //             samples.push((x, z));
+    //         }
+    //         // finally center
+    //         samples.push((0.0, 0.0));
+
+    //         // validate samples are within x_range and avoid players
+    //         let mut valid = true;
+    //         for &(sx, sz) in samples.iter() {
+    //             if sx < x_range.0 - 0.01 || sx > x_range.1 + 0.01 {
+    //                 valid = false;
+    //                 break;
+    //             }
+    //             for &(px, pz) in avoid_positions.iter() {
+    //                 let dx = sx - px;
+    //                 let dz = sz - pz;
+    //                 if dx * dx + dz * dz < avoid_dist_sq {
+    //                     valid = false;
+    //                     break;
+    //                 }
+    //             }
+    //             if !valid {
+    //                 break;
+    //             }
+    //         }
+
+    //         if valid {
+    //             // accept and build samples/cum_lengths
+    //             self.path_points = vec![
+    //                 (cx - outer_radius, cz + outer_radius),
+    //                 (cx - inner_radius, cz - inner_radius),
+    //             ]; // small descriptor for debug
+    //             self.build_samples_from_points(samples);
+    //             info!(
+    //                 "Generated two-ring path center approx ({:.2},{:.2}), inner_r {:.2}, outer_r {:.2}",
+    //                 cx, cz, inner_radius, outer_radius
+    //             );
+    //             return;
+    //         }
+    //     }
+
+    //     // fallback to safe rings (no wiggle) if attempts failed
+    //     let inner_radius = inner_radius_min;
+    //     let outer_radius = outer_radius_min;
+    //     let cx = 0.0_f32;
+    //     let cz = 0.0_f32;
+    //     let mut samples = Vec::new();
+    //     let outer_samples = n_points.max(24);
+    //     for i in 0..outer_samples {
+    //         let a = (i as f32) / (outer_samples as f32) * std::f32::consts::TAU
+    //             + std::f32::consts::FRAC_PI_4;
+    //         samples.push((cx + outer_radius * a.cos(), cz + outer_radius * a.sin()));
+    //     }
+    //     for i in 0..(outer_samples * 3 / 4) {
+    //         let a = (i as f32) / ((outer_samples * 3 / 4) as f32) * std::f32::consts::TAU
+    //             + std::f32::consts::FRAC_PI_4
+    //             + 0.5;
+    //         samples.push((cx + inner_radius * a.cos(), cz + inner_radius * a.sin()));
+    //     }
+    //     for i in 1..=20 {
+    //         let t = (i as f32) / 20.0;
+    //         let last = samples.last().copied().unwrap_or((cx + inner_radius, cz));
+    //         samples.push((last.0 * (1.0 - t), last.1 * (1.0 - t)));
+    //     }
+    //     samples.push((0.0, 0.0));
+    //     self.build_samples_from_points(samples);
+    //     info!("Fell back to default two-ring path");
+    // }
+
+    /// Build densely-sampled `samples` and `cum_lengths` from given polyline control sample points (which may already be dense).
+    // fn build_samples_from_points(&mut self, pts: Vec<(f32, f32)>) {
+    //     // For smoother motion, resample the provided points with linear interpolation to a fixed resolution per segment.
+    //     // We'll create 'samples' with approximately `res_per_unit` samples per unit length.
+    //     let res_per_unit = 6.0_f32; // sampling density (increase for smoother)
+    //     let mut samples: Vec<(f32, f32)> = Vec::new();
+
+    //     let mut total_len = 0.0_f32;
+    //     // compute segment lengths
+    //     for i in 0..pts.len() - 1 {
+    //         let a = pts[i];
+    //         let b = pts[i + 1];
+    //         let dx = b.0 - a.0;
+    //         let dz = b.1 - a.1;
+    //         let seg_len = (dx * dx + dz * dz).sqrt();
+    //         let n_steps = ((seg_len * res_per_unit).max(2.0)) as usize;
+    //         for step in 0..n_steps {
+    //             let t = (step as f32) / (n_steps as f32);
+    //             let x = a.0 * (1.0 - t) + b.0 * t;
+    //             let z = a.1 * (1.0 - t) + b.1 * t;
+    //             if samples
+    //                 .last()
+    //                 .map(|s| (s.0 - x).abs() + (s.1 - z).abs() > 1e-6)
+    //                 .unwrap_or(true)
+    //             {
+    //                 samples.push((x, z));
+    //             }
+    //         }
+    //         total_len += ((b.0 - a.0) * (b.0 - a.0) + (b.1 - a.1) * (b.1 - a.1)).sqrt();
+    //     }
+    //     // push final point
+    //     if let Some(&last) = pts.last() {
+    //         samples.push(last);
+    //     }
+
+    //     // build cumulative lengths
+    //     let mut cum_lengths: Vec<f32> = Vec::with_capacity(samples.len());
+    //     let mut acc = 0.0_f32;
+    //     for i in 0..samples.len() {
+    //         if i == 0 {
+    //             cum_lengths.push(0.0);
+    //             continue;
+    //         }
+    //         let (ax, az) = samples[i - 1];
+    //         let (bx, bz) = samples[i];
+    //         let d = ((bx - ax) * (bx - ax) + (bz - az) * (bz - az)).sqrt();
+    //         acc += d;
+    //         cum_lengths.push(acc);
+    //     }
+    //     let total_length = if let Some(&last) = cum_lengths.last() {
+    //         last
+    //     } else {
+    //         0.0
+    //     };
+
+    //     // Save
+    //     self.samples = samples;
+    //     self.cum_lengths = cum_lengths;
+    //     self.total_length = if total_length > 0.0 {
+    //         total_length
+    //     } else {
+    //         1.0
+    //     };
+    // }
 
     /// Map arc-fraction s in [0..1] to world x,z by linear interpolation in samples.
     fn chain_world_pos(&self, s: f32) -> (f32, f32) {
@@ -675,19 +726,11 @@ impl GameState {
             });
             return;
         }
-        let len = self.chain.len();
-        let after = coll_idx;
-        // find next non-gap s
-        let mut next_s = None;
-        for j in (after + 1)..len {
-            if self.chain[j].color.is_some() {
-                next_s = Some(self.chain[j].s);
-                break;
-            }
-        }
-        let cur_s = self.chain[after].s;
-        let next_s = next_s.unwrap_or((cur_s + 0.02_f32).min(0.9999_f32));
-        let insert_s = (cur_s + next_s) * 0.5_f32;
+        let cur_s = self.chain[coll_idx].s;
+        let marble_spacing = 0.02_f32;
+
+        // Insert the new marble right after the collision point
+        let insert_s = (cur_s + marble_spacing).min(1.0);
         self.chain.push(ChainMarble {
             id: Some(new_id),
             s: insert_s,
@@ -700,7 +743,41 @@ impl GameState {
             .iter()
             .position(|c| c.id == Some(new_id))
             .unwrap_or(0);
+
+        // Check if insertion point is connected to the main chain (from start)
+        let is_connected_to_main_chain = {
+            let mut connected = true;
+            for i in 0..=coll_idx {
+                if self.chain[i].color.is_none() {
+                    connected = false;
+                    break;
+                }
+            }
+            connected
+        };
+
+        // Try to remove matches
         self.try_remove_matches(inserted_idx);
+
+        // Check if the marble still exists (wasn't removed due to match)
+        let marble_still_exists = self.chain.iter().any(|c| c.id == Some(new_id));
+
+        // Only push chain forward if:
+        // 1. Marble didn't match and still exists
+        // 2. Insertion was into the main connected chain
+        if marble_still_exists && is_connected_to_main_chain {
+            // Find the current position of the inserted marble
+            if let Some(idx) = self.chain.iter().position(|c| c.id == Some(new_id)) {
+                // Push only consecutive connected marbles forward (stop at gaps)
+                for i in (idx + 1)..self.chain.len() {
+                    // Stop pushing if we hit a gap (disconnected marble)
+                    if self.chain[i].color.is_none() {
+                        break;
+                    }
+                    self.chain[i].s = (self.chain[i].s + marble_spacing).min(1.0);
+                }
+            }
+        }
     }
 
     /// Mark contiguous matches as gaps (do not collapse).

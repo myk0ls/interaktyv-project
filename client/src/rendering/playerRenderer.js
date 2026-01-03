@@ -10,12 +10,16 @@ PlayerRenderer
 export class PlayerRenderer {
   constructor(scene) {
     this.scene = scene;
-    this.players = new Map(); // id -> { mesh, preview }
+    this.players = new Map(); // id -> { mesh, preview, targetPos, currentPos, targetYaw, currentYaw }
 
     // preview marble geometry (small sphere)
     this.previewGeometry = new THREE.SphereGeometry(0.2, 8, 8);
     this.playerModel = null;
     this.loader = new GLTFLoader();
+
+    // Interpolation settings
+    this.interpolationSpeed = 10; // Higher = snappier, lower = smoother
+    this.rotationSpeed = 16; // Rotation interpolation speed
 
     // shared geometry/material for fallback/placeholder model
     this.placeholderGeometry = new THREE.CapsuleGeometry(0.4, 0.8, 4, 8);
@@ -100,23 +104,35 @@ export class PlayerRenderer {
         group.add(previewMesh);
 
         this.scene.add(group);
+
+        // Initialize with current position and rotation
+        const initX = typeof p.x === "number" ? p.x : 0;
+        const initY = typeof p.y === "number" ? p.y : 0;
+        const initZ = typeof p.z === "number" ? p.z : 0;
+        const initYaw = typeof p.yaw === "number" ? p.yaw : 0;
+
         entry = {
           mesh: group,
           preview: previewMesh,
           isPlaceholder,
+          targetPos: new THREE.Vector3(initX, initY, initZ),
+          currentPos: new THREE.Vector3(initX, initY, initZ),
+          targetYaw: initYaw,
+          currentYaw: initYaw,
         };
+        group.position.copy(entry.currentPos);
+        group.rotation.y = entry.currentYaw;
         this.players.set(p.id, entry);
+      } else {
+        // Update target position and rotation from server
+        const x = typeof p.x === "number" ? p.x : 0;
+        const y = typeof p.y === "number" ? p.y : 0;
+        const z = typeof p.z === "number" ? p.z : 0;
+        const yaw = typeof p.yaw === "number" ? p.yaw : 0;
+
+        entry.targetPos.set(x, y, z);
+        entry.targetYaw = yaw;
       }
-
-      // Update safely — default zeros if fields missing
-      const x = typeof p.x === "number" ? p.x : 0;
-      const y = typeof p.y === "number" ? p.y : 0;
-      const z = typeof p.z === "number" ? p.z : 0;
-      const yaw = typeof p.yaw === "number" ? p.yaw : 0;
-
-      entry.mesh.position.set(x, y, z);
-      // orient the model around Y (three uses rotation.y)
-      entry.mesh.rotation.y = yaw;
 
       // update preview color/material using player's loaded_color
       const loadedColor =
@@ -139,6 +155,27 @@ export class PlayerRenderer {
         // so we avoid disposing model internals (three.js GLTF clones share geometries by default).
         this.players.delete(id);
       }
+    }
+  }
+
+  // Call this every frame to smoothly interpolate positions and rotations
+  interpolate(dt) {
+    for (const [id, entry] of this.players.entries()) {
+      // Smooth position interpolation
+      const posAlpha = Math.min(1, this.interpolationSpeed * dt);
+      entry.currentPos.lerp(entry.targetPos, posAlpha);
+      entry.mesh.position.copy(entry.currentPos);
+
+      // Smooth rotation interpolation
+      const rotAlpha = Math.min(1, this.rotationSpeed * dt);
+      // Handle angle wrapping for smooth rotation
+      let angleDiff = entry.targetYaw - entry.currentYaw;
+      // Normalize angle difference to [-PI, PI]
+      while (angleDiff > Math.PI) angleDiff -= 2 * Math.PI;
+      while (angleDiff < -Math.PI) angleDiff += 2 * Math.PI;
+
+      entry.currentYaw += angleDiff * rotAlpha;
+      entry.mesh.rotation.y = entry.currentYaw;
     }
   }
 
