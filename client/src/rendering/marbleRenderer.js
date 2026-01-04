@@ -61,7 +61,7 @@ export class MarbleRenderer {
         this.scene.add(mesh);
 
         const x = typeof m.x === "number" ? m.x : 0;
-        const y = typeof m.y === "number" ? m.y : 0.1;
+        const y = typeof m.y === "number" ? m.y : 0.2;
         const z = typeof m.z === "number" ? m.z : 0;
 
         // Initialize with current position (no interpolation on first frame)
@@ -76,7 +76,7 @@ export class MarbleRenderer {
       } else {
         // Update target position from server
         const x = typeof m.x === "number" ? m.x : 0;
-        const y = typeof m.y === "number" ? m.y : 0.1;
+        const y = typeof m.y === "number" ? m.y : 0.2;
         const z = typeof m.z === "number" ? m.z : 0;
 
         entry.targetPos.set(x, y, z);

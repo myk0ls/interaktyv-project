@@ -26,9 +26,9 @@ export default class SceneManager {
       0.1,
       1000,
     );
-    this.camera.position.y = 5;
-    this.camera.position.z = 1;
-    this.camera.rotateX(-1.4);
+    this.camera.position.y = 5.5;
+    this.camera.position.z = 0;
+    this.camera.rotateX(-1.6);
 
     // renderer (fixed order)
     this.renderer = new THREE.WebGLRenderer({ antialias: true });
