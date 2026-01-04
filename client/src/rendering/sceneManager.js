@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import { PlayerRenderer } from "./playerRenderer.js";
 import { MarbleRenderer } from "./marbleRenderer.js";
+import { LevelManager } from "./levelManager.js";
 import { UIHandler } from "./uiHandler.js";
 
 /*
@@ -48,13 +49,16 @@ export default class SceneManager {
 
     // lights & floor
     this.initLights();
-    this.initFloor();
+    //this.initFloor();
 
     this.testCurve();
 
     // renderers for game objects
     this.playerRenderer = new PlayerRenderer(this.scene);
     this.marbleRenderer = new MarbleRenderer(this.scene);
+    this.levelManager = new LevelManager(this.scene);
+
+    this.levelManager.loadLevel(0, "/assets/mainLevel.glb");
 
     // create UI AFTER the renderer is on the page.
     // pass networkClient into onSendChat so we don't reference an undefined global.

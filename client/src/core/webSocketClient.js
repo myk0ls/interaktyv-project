@@ -128,25 +128,19 @@ export class WebSocketClient {
 
   startHeartbeat() {
     this.stopHeartbeat();
-
-    // 1. Initialize lastPong so the first check doesn't fail
     this.lastPong = Date.now();
 
     this.heartbeatTimer = setInterval(() => {
-      if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-        this.send({ type: "ping", timestamp: Date.now() });
+      if (!this.ws && this.ws.readyState === WebSocket.OPEN) return;
 
-        // 2. Track this specific timeout so we can clear it if needed
-        this.pongCheckTimeout = setTimeout(() => {
-          const timeSinceLastPong = Date.now() - this.lastPong;
+      this.send({ type: "ping", timestamp: Date.now() });
 
-          // If no pong for 2x interval, the connection is "dead"
-          if (timeSinceLastPong > this.options.heartbeatInterval * 2) {
-            console.warn("Heartbeat timeout, forcing reconnect...");
-            // Use a specific code so onclose knows it was a timeout
-            this.ws.close(4000, "Heartbeat timeout");
-          }
-        }, 5000);
+      const timeSinceLastPong = Date.now() - this.lastPong;
+
+      // e.g. allow 90s silence for a 30s ping
+      if (timeSinceLastPong > this.options.heartbeatInterval * 3) {
+        console.warn("Heartbeat timeout, forcing reconnect...");
+        this.ws.close(4000, "Heartbeat timeout");
       }
     }, this.options.heartbeatInterval);
   }
