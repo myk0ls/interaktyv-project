@@ -38,11 +38,6 @@ export class InputHandler {
     );
     if (!hit) return;
 
-    // IMPORTANT:
-    // We do NOT know player position here.
-    // Server will rotate relative to authoritative player pos.
-    // So we only send yaw.
-
     const dir = this.hitPoint.clone();
     dir.y = 0;
 

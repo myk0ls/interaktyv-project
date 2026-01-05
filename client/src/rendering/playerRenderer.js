@@ -1,12 +1,6 @@
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 
-/*
-PlayerRenderer
-- Keeps a Map of playerId -> entry { mesh, preview }
-- update(playersArray) will create new meshes for new players,
-  update positions for existing, and remove meshes for players that left.
-*/
 export class PlayerRenderer {
   constructor(scene) {
     this.scene = scene;

@@ -4,7 +4,6 @@ use serde_json::json;
 use std::collections::HashMap;
 use std::fs;
 use std::net::SocketAddr;
-use std::path;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::info;
@@ -650,7 +649,7 @@ impl GameState {
         for seg in segments.into_iter() {
             // seg: indices in ascending s (tail->head)
             // gather current s -> convert to arc length
-            let mut seg_s: Vec<f32> = seg.iter().map(|&i| self.chain[i].s).collect();
+            let seg_s: Vec<f32> = seg.iter().map(|&i| self.chain[i].s).collect();
             if seg_s.is_empty() {
                 continue;
             }

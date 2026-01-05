@@ -4,11 +4,6 @@ import { MarbleRenderer } from "./marbleRenderer.js";
 import { LevelManager } from "./levelManager.js";
 import { UIHandler } from "./uiHandler.js";
 
-/*
-  SceneManager
-  - container: DOM element to append renderer.domElement into (defaults to body)
-  - networkClient: optional WebSocketClient-like instance (has .on and .send)
-*/
 export default class SceneManager {
   constructor({ container = document.body, networkClient = null } = {}) {
     this.container = container;
@@ -21,12 +16,18 @@ export default class SceneManager {
     // camera
     const w = window.innerWidth;
     const h = window.innerHeight;
-    this.camera = new THREE.PerspectiveCamera(
-      75,
-      w / Math.max(1, h),
-      0.1,
-      1000,
+    this.camera = new THREE.OrthographicCamera(
+      w / -248,
+      w / 248,
+      h / 248,
+      h / -248,
     );
+    // this.camera = new THREE.PerspectiveCamera(
+    //   75,
+    //   w / Math.max(1, h),
+    //   0.1,
+    //   1000,
+    // );
     this.camera.position.y = 5.5;
     this.camera.position.z = 0;
     this.camera.rotateX(-1.6);

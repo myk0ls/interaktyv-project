@@ -40,13 +40,7 @@ export class WebSocketClient {
       // Initialize activity tracker immediately on connect
       this.lastPong = Date.now();
 
-      // Immediately send join with token (if any)
-      const joinMsg = {
-        type: "join",
-        token: this.token || null,
-      };
-      this.send(joinMsg);
-
+      // Flush queued messages
       while (this.messageQueue.length > 0) {
         const message = this.messageQueue.shift();
         this.send(message);
@@ -76,6 +70,25 @@ export class WebSocketClient {
           }
         }
         this.trigger("welcome", data);
+        return;
+      }
+
+      // Handle room list response
+      if (data && data.type === "rooms_list") {
+        this.trigger("rooms_list", data.rooms);
+        return;
+      }
+
+      // Handle room created response
+      if (data && data.type === "room_created") {
+        this.trigger("room_created", data);
+        return;
+      }
+
+      // Handle errors
+      if (data && data.type === "error") {
+        console.error("Server error:", data.message);
+        this.trigger("error", data);
         return;
       }
 
@@ -124,6 +137,27 @@ export class WebSocketClient {
       console.log("WebSocket not connected, queuing message");
       this.messageQueue.push(message);
     }
+  }
+
+  // Room operations
+  listRooms() {
+    this.send({ type: "list_rooms" });
+  }
+
+  createRoom(name, maxPlayers = 4) {
+    this.send({
+      type: "create_room",
+      name: name,
+      maxPlayers: maxPlayers,
+    });
+  }
+
+  joinRoom(roomId) {
+    this.send({
+      type: "join_room",
+      roomId: roomId,
+      token: this.token || null,
+    });
   }
 
   startHeartbeat() {

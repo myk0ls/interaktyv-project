@@ -17,17 +17,20 @@
 export default class MainMenu {
   constructor(opts = {}) {
     this.parent = opts.parent || document.body;
+    this.networkClient = opts.networkClient || null;
     this.onJoinCallback = null;
 
     this._injectStyles();
     this._buildDOM();
 
-    // seed with a single mock room
-    this.setRooms(
-      opts.rooms || [
-        { id: "room-1", name: "Room 1 — Mock", players: 1, maxPlayers: 4 },
-      ],
-    );
+    // Start with empty room list
+    this.setRooms([]);
+
+    // If network client is provided, request room list
+    if (this.networkClient) {
+      this._setupNetworkHandlers();
+      this.networkClient.listRooms();
+    }
   }
 
   _injectStyles() {
@@ -191,9 +194,40 @@ export default class MainMenu {
     this.parent.appendChild(this.overlay);
   }
 
+  // Setup network event handlers
+  _setupNetworkHandlers() {
+    if (!this.networkClient) return;
+
+    // Handle room list updates
+    this.networkClient.on("rooms_list", (rooms) => {
+      this.setRooms(rooms);
+    });
+
+    // Handle room created - auto-join it
+    this.networkClient.on("room_created", (data) => {
+      console.log("Room created:", data);
+      // Refresh room list
+      this.networkClient.listRooms();
+      // Auto-join the new room
+      if (this.onJoinCallback) {
+        this.onJoinCallback({ id: data.roomId, name: data.name });
+      }
+    });
+
+    // Handle errors
+    this.networkClient.on("error", (error) => {
+      console.error("Network error:", error);
+      alert(error.message || "An error occurred");
+    });
+  }
+
   // Public API
   show() {
     this.overlay.style.display = "flex";
+    // Refresh room list when showing menu
+    if (this.networkClient) {
+      this.networkClient.listRooms();
+    }
   }
 
   hide() {
@@ -269,16 +303,30 @@ export default class MainMenu {
   }
 
   _onRefresh() {
-    // mock behavior: shuffle rooms or re-render; in real app you'd request server list
-    this.setRooms(this.rooms || []);
+    // Request fresh room list from server
+    if (this.networkClient) {
+      this.networkClient.listRooms();
+    } else {
+      // Fallback: just re-render current rooms
+      this.setRooms(this.rooms || []);
+    }
   }
 
   _onCreateRoom() {
-    // create a mock room and auto-join it
-    const id = `room-${Date.now()}`;
-    const room = { id, name: `Room (mock)`, players: 1, maxPlayers: 4 };
-    this.addRoom(room);
-    // auto-join newly created room
-    this._doJoin(room);
+    if (this.networkClient) {
+      // Prompt user for room name
+      const name = prompt("Enter room name:", "My Room");
+      if (name) {
+        // Create room on server
+        this.networkClient.createRoom(name, 4);
+        // The room_created handler will auto-join it
+      }
+    } else {
+      // Fallback: create a mock room
+      const id = `room-${Date.now()}`;
+      const room = { id, name: `Room (mock)`, players: 1, maxPlayers: 4 };
+      this.addRoom(room);
+      this._doJoin(room);
+    }
   }
 }

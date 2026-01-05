@@ -1,11 +1,3 @@
-// UIHandler - simple DOM UI overlay for the game.
-// - Top-left: Score box (shows a random score 0..300 for now)
-// - Top-right: Chat panel with messages and input
-// Usage:
-//   const ui = new UIHandler({ parent: document.body, onSendChat: text => ws.send({type:'chat', text}) });
-//   ui.setScore(123);
-//   ui.addChatMessage('Alice', 'hello');
-//   ws.on('welcome', d => ui.addChatMessage('Server', 'Welcome!')); // example
 export class UIHandler {
   constructor(opts = {}) {
     this.parent = opts.parent || document.body;
@@ -126,94 +118,94 @@ export class UIHandler {
     this.container.appendChild(this.scoreBox);
     this.scoreValueEl = this.scoreBox.querySelector(".value");
 
-    // chat (top-right)
-    this.chatBox = document.createElement("div");
-    this.chatBox.className = "ui-chat";
+    // // chat (top-right)
+    // this.chatBox = document.createElement("div");
+    // this.chatBox.className = "ui-chat";
 
-    const header = document.createElement("div");
-    header.className = "header";
-    header.innerHTML = `<div>Chat</div><div class="small">Ctrl+Enter to send</div>`;
-    this.chatBox.appendChild(header);
+    // const header = document.createElement("div");
+    // header.className = "header";
+    // header.innerHTML = `<div>Chat</div><div class="small">Ctrl+Enter to send</div>`;
+    // this.chatBox.appendChild(header);
 
-    const messages = document.createElement("div");
-    messages.className = "messages";
-    this.chatMessagesEl = messages;
-    this.chatBox.appendChild(messages);
+    // const messages = document.createElement("div");
+    // messages.className = "messages";
+    // this.chatMessagesEl = messages;
+    // this.chatBox.appendChild(messages);
 
-    const inputRow = document.createElement("div");
-    inputRow.className = "input-row";
-    this.chatInput = document.createElement("input");
-    this.chatInput.type = "text";
-    this.chatInput.placeholder = "Say something...";
-    this.chatInput.addEventListener("keydown", (ev) => {
-      if (
-        (ev.key === "Enter" && ev.ctrlKey) ||
-        (ev.key === "Enter" &&
-          ev.shiftKey === false &&
-          ev.metaKey === false &&
-          ev.altKey === false)
-      ) {
-        // allow Enter to send (without modifier) for convenience
-        ev.preventDefault();
-        this._doSendChat();
-      }
-    });
-    inputRow.appendChild(this.chatInput);
+    // const inputRow = document.createElement("div");
+    // inputRow.className = "input-row";
+    // this.chatInput = document.createElement("input");
+    // this.chatInput.type = "text";
+    // this.chatInput.placeholder = "Say something...";
+    // this.chatInput.addEventListener("keydown", (ev) => {
+    //   if (
+    //     (ev.key === "Enter" && ev.ctrlKey) ||
+    //     (ev.key === "Enter" &&
+    //       ev.shiftKey === false &&
+    //       ev.metaKey === false &&
+    //       ev.altKey === false)
+    //   ) {
+    //     // allow Enter to send (without modifier) for convenience
+    //     ev.preventDefault();
+    //     this._doSendChat();
+    //   }
+    // });
+    // inputRow.appendChild(this.chatInput);
 
-    const sendBtn = document.createElement("button");
-    sendBtn.className = "send";
-    sendBtn.textContent = "Send";
-    sendBtn.addEventListener("click", () => this._doSendChat());
-    inputRow.appendChild(sendBtn);
+    // const sendBtn = document.createElement("button");
+    // sendBtn.className = "send";
+    // sendBtn.textContent = "Send";
+    // sendBtn.addEventListener("click", () => this._doSendChat());
+    // inputRow.appendChild(sendBtn);
 
-    this.chatBox.appendChild(inputRow);
-    this.container.appendChild(this.chatBox);
+    // this.chatBox.appendChild(inputRow);
+    // this.container.appendChild(this.chatBox);
 
     this.parent.appendChild(this.container);
   }
 
   // add a chat message (author string, message string)
-  addChatMessage(author, text, opts = {}) {
-    if (!this.chatMessagesEl) return;
-    const el = document.createElement("div");
-    el.className = "message";
-    const meta = document.createElement("div");
-    meta.className = "meta";
-    meta.textContent = `${author} • ${new Date().toLocaleTimeString()}`;
-    el.appendChild(meta);
-    const body = document.createElement("div");
-    body.className = "body";
-    body.textContent = text;
-    el.appendChild(body);
+  // addChatMessage(author, text, opts = {}) {
+  //   if (!this.chatMessagesEl) return;
+  //   const el = document.createElement("div");
+  //   el.className = "message";
+  //   const meta = document.createElement("div");
+  //   meta.className = "meta";
+  //   meta.textContent = `${author} • ${new Date().toLocaleTimeString()}`;
+  //   el.appendChild(meta);
+  //   const body = document.createElement("div");
+  //   body.className = "body";
+  //   body.textContent = text;
+  //   el.appendChild(body);
 
-    // append and scroll to bottom
-    this.chatMessagesEl.appendChild(el);
+  //   // append and scroll to bottom
+  //   this.chatMessagesEl.appendChild(el);
 
-    // trim old messages
-    while (this.chatMessagesEl.children.length > this.maxMessages) {
-      this.chatMessagesEl.removeChild(this.chatMessagesEl.firstChild);
-    }
+  //   // trim old messages
+  //   while (this.chatMessagesEl.children.length > this.maxMessages) {
+  //     this.chatMessagesEl.removeChild(this.chatMessagesEl.firstChild);
+  //   }
 
-    // smooth scroll
-    this.chatMessagesEl.scrollTop = this.chatMessagesEl.scrollHeight;
-  }
+  //   // smooth scroll
+  //   this.chatMessagesEl.scrollTop = this.chatMessagesEl.scrollHeight;
+  // }
 
-  // send chat (calls onSendChat callback if provided)
-  _doSendChat() {
-    const text = this.chatInput.value.trim();
-    if (!text) return;
-    // local echo
-    this.addChatMessage("You", text);
-    if (this.onSendChat) {
-      try {
-        this.onSendChat(text);
-      } catch (err) {
-        console.error("onSendChat handler error", err);
-      }
-    }
-    this.chatInput.value = "";
-    this.chatInput.focus();
-  }
+  // // send chat (calls onSendChat callback if provided)
+  // _doSendChat() {
+  //   const text = this.chatInput.value.trim();
+  //   if (!text) return;
+  //   // local echo
+  //   this.addChatMessage("You", text);
+  //   if (this.onSendChat) {
+  //     try {
+  //       this.onSendChat(text);
+  //     } catch (err) {
+  //       console.error("onSendChat handler error", err);
+  //     }
+  //   }
+  //   this.chatInput.value = "";
+  //   this.chatInput.focus();
+  // }
 
   // set score value explicitly
   setScore(n) {

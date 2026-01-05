@@ -9,8 +9,6 @@ export default class GameClient {
     // network client
     this.network = new WebSocketClient("ws://127.0.0.1:8080");
 
-    // create scene manager and pass network client so SceneManager can bind UI etc.
-    // SceneManager expects an options object in the current codebase.
     this.sceneManager = new SceneManager({
       container: document.body,
       networkClient: this.network,
@@ -37,18 +35,18 @@ export default class GameClient {
       this.gameState = s;
     });
 
-    // create the main menu (mock) and show it initially
+    // create the main menu and show it initially
     this.menu = new MainMenu({
       parent: document.body,
-      // you can seed rooms here if you want: rooms: [...]
+      networkClient: this.network,
     });
 
     // When user clicks Join on a room, we'll send a join request and start the client loop
     this.menu.onJoin((room) => {
       console.log("Requested join room:", room);
-      // send a mock join request to server (server should handle it if implemented)
-      if (this.network && typeof this.network.send === "function") {
-        this.network.send({ type: "join_room", roomId: room.id });
+      // Use the proper joinRoom method
+      if (this.network && typeof this.network.joinRoom === "function") {
+        this.network.joinRoom(room.id);
       }
       // hide menu and start the game loop
       this.menu.hide();

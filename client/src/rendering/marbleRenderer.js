@@ -1,10 +1,6 @@
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/Addons.js";
 
-/*
-MarbleRenderer
-- Keeps marbles by id, updates positions and removes when missing
-*/
 export class MarbleRenderer {
   constructor(scene) {
     this.scene = scene;
