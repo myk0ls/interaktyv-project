@@ -81,6 +81,21 @@ export default class GameClient {
       const dt = (now - this.lastTime) / 1000;
       this.lastTime = now;
 
+      // Update input handler with local player position
+      if (this.gameState && this.gameState.players) {
+        // Find the local player (you'll need to store the player ID when joining)
+        const localPlayer = this.gameState.players.find(
+          (p) => p.id === this.network.myPlayerId,
+        );
+        if (localPlayer) {
+          this.input.setPlayerPosition(
+            localPlayer.x || 0,
+            localPlayer.y || 0,
+            localPlayer.z || 0,
+          );
+        }
+      }
+
       // update renderers with latest authoritative state
       this.sceneManager.update(dt, this.gameState);
       this.sceneManager.render();

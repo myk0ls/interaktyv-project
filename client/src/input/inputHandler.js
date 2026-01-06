@@ -16,8 +16,15 @@ export class InputHandler {
     this.lookDir = new THREE.Vector3();
     this.currentYaw = 0;
 
+    // Player position for calculating aim direction
+    this.playerPos = new THREE.Vector3(0, 0, 0);
+
     domElement.addEventListener("pointermove", (e) => this.onPointerMove(e));
     domElement.addEventListener("click", () => this.onShoot());
+  }
+
+  setPlayerPosition(x, y, z) {
+    this.playerPos.set(x, y, z);
   }
 
   onPointerMove(e) {
@@ -38,7 +45,10 @@ export class InputHandler {
     );
     if (!hit) return;
 
-    const dir = this.hitPoint.clone();
+    // Calculate direction FROM player TO target
+    const dir = new THREE.Vector3();
+    dir.x = this.hitPoint.x - this.playerPos.x;
+    dir.z = this.hitPoint.z - this.playerPos.z;
     dir.y = 0;
 
     if (dir.lengthSq() < 1e-6) return;

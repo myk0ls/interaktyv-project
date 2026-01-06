@@ -103,7 +103,7 @@ impl Default for GameState {
             cum_lengths: Vec::new(),
             total_length: 2.0,
             spawn_accum: 0.0,
-            spawn_interval: 1.5,
+            spawn_interval: 0.75,
             marble_diameter: 0.4,
             spacing_length: 0.4 * 1.02,
             chain_speed: 0.02,
@@ -391,16 +391,11 @@ impl GameState {
         self.chain
             .sort_by(|a, b| a.s.partial_cmp(&b.s).unwrap_or(std::cmp::Ordering::Equal));
 
-        // collision detection & insertion (gaps ignored)
+        // collision detection & insertion
         let mut i = 0usize;
         while i < self.marbles.len() {
             let m = self.marbles[i].clone();
             if let Some(coll_idx) = self.find_collision_index(&m) {
-                // don't insert if next is a gap
-                if coll_idx + 1 < self.chain.len() && self.chain[coll_idx + 1].color.is_none() {
-                    i += 1;
-                    continue;
-                }
                 self.insert_into_chain(m, coll_idx);
                 self.marbles.swap_remove(i);
                 continue;
@@ -485,9 +480,10 @@ impl GameState {
         if self.chain.is_empty() || self.samples.is_empty() {
             return None;
         }
-        let collision_distance = (self.marble_diameter * 1.0).max(0.5);
+        let collision_distance = (self.marble_diameter * 1.8).max(0.7);
         let collision_sq = collision_distance * collision_distance;
-        let mut best: Option<(usize, f32)> = None;
+        let mut best: Option<(usize, f32, f32)> = None; // (index, distance, s_value)
+
         for (idx, cm) in self.chain.iter().enumerate() {
             if cm.color.is_none() {
                 continue;
@@ -496,81 +492,120 @@ impl GameState {
             let dx = marble.x - cx;
             let dz = marble.z - cz;
             let d2 = dx * dx + dz * dz;
+
             if d2 <= collision_sq {
                 let d = d2.sqrt();
                 match best {
-                    None => best = Some((idx, d)),
-                    Some((_, bd)) => {
-                        if d < bd {
-                            best = Some((idx, d));
+                    None => best = Some((idx, d, cm.s)),
+                    Some((_, bd, bs)) => {
+                        // Prefer closer marbles, but if distances are similar (within 0.15),
+                        // prefer marbles with higher s (closer to head)
+                        if d < bd - 0.15 || (d < bd + 0.15 && cm.s > bs) {
+                            best = Some((idx, d, cm.s));
                         }
                     }
                 }
             }
         }
-        best.map(|(i, _)| i)
+
+        if let Some((idx, dist, s_val)) = best {
+            let has_gap_before = idx > 0 && self.chain[idx - 1].color.is_none();
+            let has_gap_after = idx + 1 < self.chain.len() && self.chain[idx + 1].color.is_none();
+
+            info!(
+                "Collision detected: idx={}, dist={:.3}, s={:.3}, chain_len={}, gap_before={}, gap_after={}",
+                idx, dist, s_val, self.chain.len(), has_gap_before, has_gap_after
+            );
+        }
+        best.map(|(i, _, _)| i)
     }
 
     fn insert_into_chain(&mut self, marble: Marble, coll_idx: usize) {
         let new_id = marble.id;
         let color = marble.color.clone();
+        let color_str = color.clone(); // Clone for logging
+
         if self.chain.is_empty() {
             self.chain.push(ChainMarble {
                 id: Some(new_id),
                 s: 0.0,
                 color: Some(color),
             });
+            info!("Inserted first marble id={} color={}", new_id, color_str);
             return;
         }
-        let cur_s = self.chain[coll_idx].s;
-        let marble_spacing = 0.02_f32;
 
-        // Insert the new marble right after the collision point
-        let insert_s = (cur_s - marble_spacing).min(1.0);
+        let cur_s = self.chain[coll_idx].s;
+        let spacing = self.spacing_length / self.total_length.max(0.1); // Convert to s units
+
+        // Determine if we're hitting the head of the chain (or very close to it)
+        let max_s = self
+            .chain
+            .iter()
+            .filter(|cm| cm.color.is_some())
+            .map(|cm| cm.s)
+            .max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+            .unwrap_or(0.0);
+
+        let is_head = (cur_s - max_s).abs() < spacing * 0.5;
+
+        // Insert position: slightly behind collision point, or ahead if at head
+        let insert_s = if is_head {
+            // Insert ahead of head
+            (cur_s + spacing * 0.5).min(1.0)
+        } else {
+            // Insert behind collision point
+            (cur_s - spacing * 0.5).max(0.0)
+        };
+
+        info!(
+            "Inserting marble id={} color={} at s={:.3} (coll_s={:.3}, is_head={}, max_s={:.3})",
+            new_id, color_str, insert_s, cur_s, is_head, max_s
+        );
+
         self.chain.push(ChainMarble {
             id: Some(new_id),
             s: insert_s,
             color: Some(color),
         });
+
+        // Sort by s
         self.chain
             .sort_by(|a, b| a.s.partial_cmp(&b.s).unwrap_or(std::cmp::Ordering::Equal));
+
+        // Find where it ended up after sorting
         let inserted_idx = self
             .chain
             .iter()
             .position(|c| c.id == Some(new_id))
             .unwrap_or(0);
 
-        // Check if insertion point is connected to the main chain (from start)
-        let is_connected_to_main_chain = {
-            let mut connected = true;
-            for i in 0..=coll_idx {
-                if self.chain[i].color.is_none() {
-                    connected = false;
-                    break;
-                }
-            }
-            connected
-        };
+        info!(
+            "After sort, marble at index {} out of {}",
+            inserted_idx,
+            self.chain.len()
+        );
 
-        // Try to remove matches
+        // Try to remove matches BEFORE pushing marbles back
         self.try_remove_matches(inserted_idx);
 
         // Check if the marble still exists (wasn't removed due to match)
         let marble_still_exists = self.chain.iter().any(|c| c.id == Some(new_id));
 
-        // Only push chain forward if:
-        // 1. Marble didn't match and still exists
-        // 2. Insertion was into the main connected chain
-        if marble_still_exists && is_connected_to_main_chain {
-            // Find the current position of the inserted marble
-            if let Some(idx) = self.chain.iter().position(|c| c.id == Some(new_id)) {
-                // Push only consecutive connected marbles forward (stop at gaps)
+        if !marble_still_exists {
+            info!("Marble matched and was removed!");
+            return;
+        }
+
+        // Push marbles behind the insertion point back to maintain spacing
+        if let Some(idx) = self.chain.iter().position(|c| c.id == Some(new_id)) {
+            // Only push if not at head
+            if !is_head {
                 for i in (idx + 1)..self.chain.len() {
-                    // Stop pushing if we hit a gap (disconnected marble)
                     if self.chain[i].color.is_none() {
                         break;
                     }
-                    self.chain[i].s = (self.chain[i].s + marble_spacing).min(1.0);
+                    self.chain[i].s = (self.chain[i].s + spacing).min(1.0);
                 }
             }
         }
@@ -589,7 +624,10 @@ impl GameState {
             return;
         }
         let color = self.chain[idx].color.clone().unwrap();
-        // left
+
+        info!("Checking matches for idx={} color={}", idx, color);
+
+        // Count matching marbles to the left
         let mut left = 0usize;
         let mut cur = idx;
         while cur > 0 {
@@ -605,7 +643,8 @@ impl GameState {
                 break;
             }
         }
-        // right
+
+        // Count matching marbles to the right
         let mut right = 0usize;
         cur = idx;
         while cur + 1 < len {
@@ -621,7 +660,13 @@ impl GameState {
                 break;
             }
         }
+
         let total = 1 + left + right;
+        info!(
+            "Match count: left={}, right={}, total={}",
+            left, right, total
+        );
+
         if total >= 3 {
             let start = if idx >= left { idx - left } else { 0 };
             let end = (idx + right).min(len - 1);
@@ -629,7 +674,7 @@ impl GameState {
                 self.chain[i].color = None;
                 self.chain[i].id = None;
             }
-            info!("Marked {} matching marbles as gaps color={}", total, color);
+            info!("MATCH! Removed {} marbles with color={}", total, color);
         }
     }
 

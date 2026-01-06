@@ -11,6 +11,7 @@ export class WebSocketClient {
     this.messageQueue = [];
     this.eventHandlers = {};
     this.isConnected = false;
+    this.myPlayerId = null; // Store the player ID from welcome message
 
     // read token from localStorage (if present)
     this.clientTokenKey = this.options.clientTokenKey || "zuma_token";
@@ -68,6 +69,11 @@ export class WebSocketClient {
           } catch (e) {
             console.warn("Failed to persist token:", e);
           }
+        }
+        // Store player ID for local player tracking
+        if (data.player && data.player.id !== undefined) {
+          this.myPlayerId = data.player.id;
+          console.log("Local player ID:", this.myPlayerId);
         }
         this.trigger("welcome", data);
         return;
