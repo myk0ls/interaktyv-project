@@ -55,19 +55,3 @@ export class LevelManager {
     console.log(`Level ${levelId} unloaded.`);
   }
 }
-//         preview.position.set(0, 2.5, 0);
-//         group.add(preview);
-//
-//         this.scene.add(group);
-//
-//         entry = {
-//           mesh: group,
-//           targetPos: new THREE.Vector3(),
-//           currentPos: new THREE.Vector3(),
-//           velocity: new THREE.Vector3(),
-//           isPlaceholder: isPlaceholder,
-//           preview: preview,
-//         };
-//         this.players.set(p.id, entry);
-//       }
-//    // update target position and rotation from server

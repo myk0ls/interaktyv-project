@@ -228,11 +228,11 @@ export class UIHandler {
     // example: when server sends "chat" typed messages, show them
     wsClient.on("message", (data) => {
       if (!data) return;
-      if (data.type === "chat") {
-        const author = data.author || "Peer";
-        const text = data.text || "";
-        this.addChatMessage(author, text);
-      }
+      // if (data.type === "chat") {
+      //   const author = data.author || "Peer";
+      //   const text = data.text || "";
+      //   this.addChatMessage(author, text);
+      // }
       // server could also send score updates
       if (data.type === "score") {
         this.setScore(data.value || 0);

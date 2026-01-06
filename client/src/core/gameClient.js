@@ -7,7 +7,13 @@ import Stats from "stats.js";
 export default class GameClient {
   constructor() {
     // network client
-    this.network = new WebSocketClient("ws://127.0.0.1:8080");
+    //this.network = new WebSocketClient("ws://127.0.0.1:8080");
+
+    // this.network = new WebSocketClient(
+    //   "wss://wryly-unridiculed-bret.ngrok-free.dev/ws",
+    // );
+
+    this.network = new WebSocketClient("ws://localhost:8080/ws");
 
     this.sceneManager = new SceneManager({
       container: document.body,

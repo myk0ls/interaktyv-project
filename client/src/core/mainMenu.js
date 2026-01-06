@@ -274,7 +274,7 @@ export default class MainMenu {
       name.textContent = r.name || String(r.id);
       const count = document.createElement("div");
       count.className = "room-count";
-      count.textContent = `${r.players || 0} / ${r.maxPlayers || 4}`;
+      count.textContent = `${r.players || 0} / ${r.maxPlayers || 2}`;
 
       meta.appendChild(name);
       meta.appendChild(count);
@@ -324,7 +324,7 @@ export default class MainMenu {
     } else {
       // Fallback: create a mock room
       const id = `room-${Date.now()}`;
-      const room = { id, name: `Room (mock)`, players: 1, maxPlayers: 4 };
+      const room = { id, name: `Room (mock)`, players: 1, maxPlayers: 2 };
       this.addRoom(room);
       this._doJoin(room);
     }

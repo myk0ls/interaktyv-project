@@ -562,6 +562,7 @@ impl GameState {
             m.z += m.vz * dt;
             m.life -= dt;
         }
+        // remove dead/out-of-bounds marbles
         self.marbles
             .retain(|m| m.life > 0.0 && m.x.abs() < 200.0 && m.y > -50.0 && m.z.abs() < 200.0);
 
@@ -569,7 +570,7 @@ impl GameState {
         self.spawn_accum += dt;
         while self.spawn_accum >= self.spawn_interval {
             self.spawn_accum -= self.spawn_interval;
-            let mut rng = rand::thread_rng();
+            let mut rng = rand::rng();
             let color = random_color_with_rng(&mut rng);
             let id = self.next_marble_id;
             self.next_marble_id += 1;

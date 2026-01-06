@@ -52,7 +52,7 @@ export default class SceneManager {
     this.initLights();
     //this.initFloor();
 
-    this.testCurve();
+    this.testCurve("/paths/zuma_path.json");
 
     // renderers for game objects
     this.playerRenderer = new PlayerRenderer(this.scene);
@@ -198,8 +198,8 @@ export default class SceneManager {
     document.body.style.margin = "0";
   }
 
-  async testCurve() {
-    const data = await fetch("/paths/zuma_path.json").then((r) => r.json());
+  async testCurve(filepath) {
+    const data = await fetch(filepath).then((r) => r.json());
     const points = data.points.map((p) => new THREE.Vector3(...p));
 
     console.log(points);
