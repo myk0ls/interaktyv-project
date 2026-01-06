@@ -43,6 +43,7 @@ pub struct ChainMarble {
     pub id: Option<u64>,
     pub s: f32,                // fraction [0..1] along path
     pub color: Option<String>, // None => gap
+    pub frozen: bool,          // true if disconnected from spawn point
 }
 
 #[derive(Debug)]
@@ -131,6 +132,7 @@ impl Default for GameState {
                 id: Some(mid),
                 s,
                 color: Some(color),
+                frozen: false,
             });
         }
 
@@ -141,6 +143,11 @@ impl Default for GameState {
 impl GameState {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    fn prune_gaps(&mut self) {
+        // Drop any gap placeholders; we represent gaps implicitly by s-jumps
+        self.chain.retain(|cm| cm.color.is_some());
     }
 
     fn read_path(&mut self, path_json: &str) {
@@ -366,7 +373,7 @@ impl GameState {
         self.spawn_accum += dt;
         while self.spawn_accum >= self.spawn_interval {
             self.spawn_accum -= self.spawn_interval;
-            let mut rng = rand::rng();
+            let mut rng = rand::thread_rng();
             let color = random_color_chain(&mut rng, &self.chain);
             let id = self.next_marble_id;
             self.next_marble_id += 1;
@@ -374,12 +381,19 @@ impl GameState {
                 id: Some(id),
                 s: 0.0,
                 color: Some(color),
+                frozen: false,
             });
         }
 
+        // defensive: prune any gap placeholders so gaps are implicit by s-jumps
+        self.prune_gaps();
+
         // advance chain by increasing s proportional to fraction speed = chain_speed * dt
+        // only advance non-frozen marbles
         for cm in self.chain.iter_mut() {
-            cm.s += self.chain_speed * dt;
+            if !cm.frozen {
+                cm.s += self.chain_speed * dt;
+            }
         }
         // remove those past end (s >= 1.0)
         self.chain.retain(|cm| cm.s < 1.0);
@@ -387,9 +401,24 @@ impl GameState {
         // equalize spacing per contiguous non-gap segments using arc-length (s * total_length)
         self.equalize_chain_spacing();
 
-        // keep chain sorted
+        // check for reconnection between active and frozen segments
+        // (this may call equalize_chain_spacing again and modify positions)
+        self.check_reconnection();
+
+        // keep chain sorted (must be after reconnection since it may modify positions)
         self.chain
             .sort_by(|a, b| a.s.partial_cmp(&b.s).unwrap_or(std::cmp::Ordering::Equal));
+
+        // safety: ensure there is at least one active segment; if not, unfreeze all
+        if !self.chain.is_empty() && !self.chain.iter().any(|cm| cm.color.is_some() && !cm.frozen) {
+            for cm in self.chain.iter_mut() {
+                if cm.color.is_some() {
+                    cm.frozen = false;
+                }
+            }
+            info!("Safety: no active segment detected — unfroze all marbles");
+            self.equalize_chain_spacing();
+        }
 
         // collision detection & insertion
         let mut i = 0usize;
@@ -405,6 +434,7 @@ impl GameState {
     }
 
     /// Re-space contiguous non-gap segments to have equal arc-length spacing anchored at the head of each segment.
+    /// Only equalizes spacing for non-frozen (active) segments.
     fn equalize_chain_spacing(&mut self) {
         if self.chain.is_empty() || self.total_length <= 0.0 {
             return;
@@ -440,6 +470,13 @@ impl GameState {
 
         for seg in segments.into_iter() {
             // seg: indices in ascending s (tail->head)
+
+            // Check if this segment is frozen - if all marbles are frozen, skip spacing adjustment
+            let all_frozen = seg.iter().all(|&i| self.chain[i].frozen);
+            if all_frozen {
+                continue; // Don't adjust spacing for frozen segments
+            }
+
             // gather current s -> convert to arc length
             let seg_s: Vec<f32> = seg.iter().map(|&i| self.chain[i].s).collect();
             if seg_s.is_empty() {
@@ -547,11 +584,13 @@ impl GameState {
                 id: Some(new_id),
                 s: 0.0,
                 color: Some(color),
+                frozen: false,
             });
             info!("Inserted first marble id={} color={}", new_id, color_str);
             return;
         }
 
+        // Don't inherit frozen state - inserted marbles should always be active
         let cur_s = self.chain[coll_idx].s;
         let spacing = self.spacing_length / self.total_length.max(0.1); // Convert to s units
 
@@ -583,6 +622,7 @@ impl GameState {
             id: Some(new_id),
             s: insert_s,
             color: Some(color),
+            frozen: false,
         });
 
         // Sort by s
@@ -830,11 +870,280 @@ impl GameState {
         if total >= 3 {
             let start = if idx >= left { idx - left } else { 0 };
             let end = (idx + right).min(len - 1);
-            for i in start..=end {
-                self.chain[i].color = None;
-                self.chain[i].id = None;
+            for i in (start..=end).rev() {
+                self.chain.remove(i);
             }
             info!("MATCH! Removed {} marbles with color={}", total, color);
+
+            // Clean any residual gap placeholders and re-evaluate segments
+            self.prune_gaps();
+
+            // After removing matches, analyze segments and freeze disconnected ones
+            self.analyze_and_freeze_segments();
+        }
+    }
+
+    /// After match removal, identify segments and freeze any that are disconnected from spawn (tail).
+    /// The segment with lowest s values is connected to spawn and remains active.
+    /// All other segments are frozen until the active segment reconnects with them.
+    fn analyze_and_freeze_segments(&mut self) {
+        if self.chain.is_empty() {
+            return;
+        }
+
+        // Sort indices by s ascending (tail -> head)
+        let mut order: Vec<usize> = (0..self.chain.len()).collect();
+        order.sort_by(|&a, &b| {
+            self.chain[a]
+                .s
+                .partial_cmp(&self.chain[b].s)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        // Find contiguous segments (separated by gaps or large s jumps)
+        let mut segments: Vec<Vec<usize>> = Vec::new();
+        let mut cur_segment: Vec<usize> = Vec::new();
+
+        for &idx in order.iter() {
+            if self.chain[idx].color.is_none() {
+                // Gap - end current segment
+                if !cur_segment.is_empty() {
+                    segments.push(cur_segment);
+                    cur_segment = Vec::new();
+                }
+            } else {
+                // Check if there's a large gap from previous marble
+                if !cur_segment.is_empty() {
+                    let prev_idx = *cur_segment.last().unwrap();
+                    let prev_s = self.chain[prev_idx].s;
+                    let cur_s = self.chain[idx].s;
+                    let gap_threshold = self.spacing_length * 2.0; // significant gap
+                    let gap_in_abs = (cur_s - prev_s) * self.total_length;
+
+                    if gap_in_abs > gap_threshold {
+                        // Large gap - start new segment
+                        segments.push(cur_segment);
+                        cur_segment = Vec::new();
+                    }
+                }
+                cur_segment.push(idx);
+            }
+        }
+        if !cur_segment.is_empty() {
+            segments.push(cur_segment);
+        }
+
+        if segments.is_empty() {
+            return;
+        }
+
+        info!("Found {} segments after match removal", segments.len());
+
+        // First segment (lowest s values) is connected to spawn - keep it active
+        // All other segments are disconnected - freeze them
+        for (seg_idx, seg) in segments.iter().enumerate() {
+            let should_freeze = seg_idx > 0;
+            for &chain_idx in seg.iter() {
+                self.chain[chain_idx].frozen = should_freeze;
+            }
+            if should_freeze {
+                let min_s = seg
+                    .iter()
+                    .map(|&i| self.chain[i].s)
+                    .min_by(|a, b| a.partial_cmp(b).unwrap())
+                    .unwrap();
+                let max_s = seg
+                    .iter()
+                    .map(|&i| self.chain[i].s)
+                    .max_by(|a, b| a.partial_cmp(b).unwrap())
+                    .unwrap();
+                info!(
+                    "Segment {} FROZEN (s range: {:.3} - {:.3}, {} marbles)",
+                    seg_idx,
+                    min_s,
+                    max_s,
+                    seg.len()
+                );
+            }
+        }
+
+        // Check for reconnection: if active segment head is close to frozen segment tail, unfreeze
+        self.check_reconnection();
+    }
+
+    /// Check if the active (non-frozen) segment has reached a frozen segment and reconnect them.
+    fn check_reconnection(&mut self) {
+        if self.chain.is_empty() {
+            return;
+        }
+
+        let reconnect_distance = self.spacing_length * 1.5; // threshold for reconnection
+
+        // Find the head of the active segment (highest s among non-frozen)
+        let active_head_s = self
+            .chain
+            .iter()
+            .filter(|cm| cm.color.is_some() && !cm.frozen)
+            .map(|cm| cm.s)
+            .max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+
+        if active_head_s.is_none() {
+            return;
+        }
+        let active_head_s = active_head_s.unwrap();
+
+        // Find the tail of the nearest frozen segment (lowest s among frozen marbles > active_head_s)
+        let mut frozen_segments_to_unfreeze: Vec<(f32, f32)> = Vec::new(); // (min_s, max_s) of segments to unfreeze
+
+        // Group frozen marbles into segments
+        let mut frozen_order: Vec<usize> = (0..self.chain.len())
+            .filter(|&i| self.chain[i].color.is_some() && self.chain[i].frozen)
+            .collect();
+        frozen_order.sort_by(|&a, &b| {
+            self.chain[a]
+                .s
+                .partial_cmp(&self.chain[b].s)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        if frozen_order.is_empty() {
+            return;
+        }
+
+        // Find contiguous frozen segments
+        let mut frozen_segs: Vec<Vec<usize>> = Vec::new();
+        let mut cur_seg: Vec<usize> = Vec::new();
+
+        for &idx in frozen_order.iter() {
+            if cur_seg.is_empty() {
+                cur_seg.push(idx);
+            } else {
+                let prev_idx = *cur_seg.last().unwrap();
+                let prev_s = self.chain[prev_idx].s;
+                let cur_s = self.chain[idx].s;
+                let gap = (cur_s - prev_s) * self.total_length;
+
+                if gap > self.spacing_length * 2.0 {
+                    frozen_segs.push(cur_seg);
+                    cur_seg = Vec::new();
+                }
+                cur_seg.push(idx);
+            }
+        }
+        if !cur_seg.is_empty() {
+            frozen_segs.push(cur_seg);
+        }
+
+        // Check each frozen segment
+        for seg in frozen_segs.iter() {
+            let seg_min_s = seg
+                .iter()
+                .map(|&i| self.chain[i].s)
+                .min_by(|a, b| a.partial_cmp(b).unwrap())
+                .unwrap();
+            let seg_max_s = seg
+                .iter()
+                .map(|&i| self.chain[i].s)
+                .max_by(|a, b| a.partial_cmp(b).unwrap())
+                .unwrap();
+
+            // Check if active head has reached this frozen segment's tail
+            let distance_abs = (seg_min_s - active_head_s) * self.total_length;
+
+            if distance_abs >= 0.0 && distance_abs <= reconnect_distance {
+                frozen_segments_to_unfreeze.push((seg_min_s, seg_max_s));
+                info!("RECONNECTING! Active head at s={:.3} reached frozen segment (s range: {:.3} - {:.3})",
+                      active_head_s, seg_min_s, seg_max_s);
+            }
+        }
+
+        // Unfreeze the reconnected segments and clean up gaps between them
+        let mut reconnection_happened = false;
+        for (min_s, max_s) in frozen_segments_to_unfreeze {
+            reconnection_happened = true;
+
+            // First, collect indices of frozen marbles in this segment (before any modifications)
+            let mut frozen_marble_data: Vec<(usize, String)> = Vec::new();
+            for (idx, cm) in self.chain.iter().enumerate() {
+                if cm.color.is_some() && cm.frozen && cm.s >= min_s - 0.001 && cm.s <= max_s + 0.001
+                {
+                    frozen_marble_data.push((idx, cm.color.clone().unwrap()));
+                }
+            }
+
+            // Remove gaps between active head and frozen tail
+            let mut gaps_to_remove: Vec<usize> = Vec::new();
+            for (idx, cm) in self.chain.iter().enumerate() {
+                if cm.color.is_none() && cm.s > active_head_s && cm.s < min_s {
+                    gaps_to_remove.push(idx);
+                }
+            }
+
+            // Remove gaps in reverse order to maintain indices
+            gaps_to_remove.sort_by(|a, b| b.cmp(a));
+            for idx in gaps_to_remove.iter() {
+                info!(
+                    "Removing gap at index {} during reconnection (s={:.3})",
+                    idx, self.chain[*idx].s
+                );
+            }
+            for idx in gaps_to_remove {
+                self.chain.remove(idx);
+            }
+
+            // Pull frozen segment marbles to be immediately adjacent to active segment
+            // This ensures they're treated as one contiguous segment for matching
+            let spacing_in_s = self.spacing_length / self.total_length.max(0.1);
+
+            // After removing gaps, find the frozen marbles again by their position range
+            // Note: we need to search by the original s range since indices may have shifted
+            let mut frozen_indices: Vec<usize> = Vec::new();
+            for (idx, cm) in self.chain.iter().enumerate() {
+                if cm.color.is_some() && cm.frozen && cm.s >= min_s - 0.001 && cm.s <= max_s + 0.001
+                {
+                    frozen_indices.push(idx);
+                }
+            }
+
+            // Sort by s to process in order
+            frozen_indices.sort_by(|&a, &b| {
+                self.chain[a]
+                    .s
+                    .partial_cmp(&self.chain[b].s)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+
+            // Reposition frozen marbles to be immediately adjacent to active head
+            // Start positioning right after the active head
+            for (i, &idx) in frozen_indices.iter().enumerate() {
+                let old_s = self.chain[idx].s;
+                let new_s = active_head_s + (spacing_in_s * (i as f32 + 1.0));
+                self.chain[idx].s = new_s.min(1.0); // clamp to valid range
+                info!(
+                    "Pulling frozen marble (id={:?}, color={:?}) from s={:.3} to s={:.3}",
+                    self.chain[idx].id, self.chain[idx].color, old_s, new_s
+                );
+            }
+
+            // Calculate the end position for unfreezing check
+            let end_s = active_head_s + (spacing_in_s * (frozen_indices.len() as f32 + 1.0));
+
+            // Unfreeze the segment (use updated s positions since we just moved them)
+            for cm in self.chain.iter_mut() {
+                if cm.frozen {
+                    let new_s = cm.s;
+                    // Check if this marble is in the range we just repositioned
+                    if new_s >= active_head_s && new_s <= end_s {
+                        cm.frozen = false;
+                        info!("Unfroze marble id={:?} at new s={:.3}", cm.id, new_s);
+                    }
+                }
+            }
+        }
+
+        // After reconnection, re-equalize spacing to properly connect the segments
+        if reconnection_happened {
+            self.equalize_chain_spacing();
         }
     }
 
