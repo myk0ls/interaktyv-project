@@ -811,7 +811,13 @@ impl GameState {
         }
     }
 
-    /// Mark contiguous matches as gaps (do not collapse).
+    /// Remove contiguous matches; if this creates a "hole", shift the head-side segment backward to close the hole,
+    /// then freeze the head-side segment and keep the tail (spawn-connected) segment active.
+    ///
+    /// In Zuma terms: when you pop a group, the marbles behind the gap move backwards to close it.
+    ///
+    /// Example desired behavior (conceptual):
+    /// r b g g g b y  --remove ggg-->  r b b y  (head-side moved backward to fill the hole; then may be frozen if disconnected)
     fn try_remove_matches(&mut self, idx: usize) {
         if self.chain.is_empty() {
             return;
@@ -870,15 +876,92 @@ impl GameState {
         if total >= 3 {
             let start = if idx >= left { idx - left } else { 0 };
             let end = (idx + right).min(len - 1);
+
+            // Capture boundary s-values BEFORE removal so we can close the "hole" by shifting the head-side backward.
+            //
+            // In a Zuma game, after a pop, the marbles behind the removed group move backward to fill the gap.
+            // Here that's implemented by moving the entire head-side segment backward in `s`.
+            let left_neighbor_s = if start > 0 {
+                self.chain
+                    .get(start - 1)
+                    .and_then(|cm| cm.color.as_ref().map(|_| cm.s))
+            } else {
+                None
+            };
+            let right_neighbor_s = if end + 1 < self.chain.len() {
+                self.chain
+                    .get(end + 1)
+                    .and_then(|cm| cm.color.as_ref().map(|_| cm.s))
+            } else {
+                None
+            };
+
+            // Remove matched run
             for i in (start..=end).rev() {
                 self.chain.remove(i);
             }
             info!("MATCH! Removed {} marbles with color={}", total, color);
 
-            // Clean any residual gap placeholders and re-evaluate segments
+            // Drop any explicit gap placeholders; gaps are represented via s-jumps.
             self.prune_gaps();
 
-            // After removing matches, analyze segments and freeze disconnected ones
+            // If there are marbles on BOTH sides of the removed run, shift the head-side segment backward
+            // so it becomes immediately adjacent to the tail-side segment (closing the hole).
+            if let (Some(l_s), Some(r_s)) = (left_neighbor_s, right_neighbor_s) {
+                if !self.chain.is_empty() {
+                    // Identify head-side marbles by their pre-removal boundary `s` (>= right neighbor s).
+                    let mut head_side_indices: Vec<usize> = self
+                        .chain
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(i, cm)| {
+                            if cm.color.is_some() && cm.s >= r_s - 0.0005 {
+                                Some(i)
+                            } else {
+                                None
+                            }
+                        })
+                        .collect();
+
+                    head_side_indices.sort_by(|&a, &b| {
+                        self.chain[a]
+                            .s
+                            .partial_cmp(&self.chain[b].s)
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                    });
+
+                    if !head_side_indices.is_empty() {
+                        let spacing_in_s = self.spacing_length / self.total_length.max(0.1);
+
+                        // Target: first head-side marble should sit one spacing after the left neighbor.
+                        let first_head_idx = head_side_indices[0];
+                        let desired_first_s = (l_s + spacing_in_s).min(0.999);
+                        let current_first_s = self.chain[first_head_idx].s;
+
+                        // If current is ahead, pull the whole head-side backward by delta.
+                        let delta = current_first_s - desired_first_s;
+                        if delta > 0.00001 {
+                            info!(
+                                "Closing hole after match: left_s={:.3}, first_head_s={:.3} -> desired_first_s={:.3}, shifting head segment by -{:.5} in s",
+                                l_s,
+                                current_first_s,
+                                desired_first_s,
+                                delta
+                            );
+
+                            for &i in head_side_indices.iter() {
+                                self.chain[i].s = (self.chain[i].s - delta).max(0.0);
+                            }
+                        }
+                    }
+                }
+            }
+
+            // After closing the gap, re-equalize spacing for the active segment.
+            // (Frozen segments are not equalized by `equalize_chain_spacing()`.)
+            self.equalize_chain_spacing();
+
+            // After removal and hole closing, analyze segments and freeze disconnected ones (head-side freezes).
             self.analyze_and_freeze_segments();
         }
     }
