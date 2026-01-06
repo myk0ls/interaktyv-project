@@ -484,6 +484,15 @@ impl GameState {
         let collision_sq = collision_distance * collision_distance;
         let mut best: Option<(usize, f32, f32)> = None; // (index, distance, s_value)
 
+        // Find head marble for debugging
+        let max_s = self
+            .chain
+            .iter()
+            .filter(|cm| cm.color.is_some())
+            .map(|cm| cm.s)
+            .max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+            .unwrap_or(0.0);
+
         for (idx, cm) in self.chain.iter().enumerate() {
             if cm.color.is_none() {
                 continue;
@@ -492,16 +501,24 @@ impl GameState {
             let dx = marble.x - cx;
             let dz = marble.z - cz;
             let d2 = dx * dx + dz * dz;
+            let dist = d2.sqrt();
+
+            // Log if this is the head marble
+            if (cm.s - max_s).abs() < 0.001 {
+                info!(
+                    "HEAD marble check: idx={}, s={:.3}, pos=({:.2},{:.2}), shot_pos=({:.2},{:.2}), dist={:.3}, collision_radius={:.3}",
+                    idx, cm.s, cx, cz, marble.x, marble.z, dist, collision_distance
+                );
+            }
 
             if d2 <= collision_sq {
-                let d = d2.sqrt();
                 match best {
-                    None => best = Some((idx, d, cm.s)),
+                    None => best = Some((idx, dist, cm.s)),
                     Some((_, bd, bs)) => {
                         // Prefer closer marbles, but if distances are similar (within 0.15),
                         // prefer marbles with higher s (closer to head)
-                        if d < bd - 0.15 || (d < bd + 0.15 && cm.s > bs) {
-                            best = Some((idx, d, cm.s));
+                        if dist < bd - 0.15 || (dist < bd + 0.15 && cm.s > bs) {
+                            best = Some((idx, dist, cm.s));
                         }
                     }
                 }
@@ -538,7 +555,7 @@ impl GameState {
         let cur_s = self.chain[coll_idx].s;
         let spacing = self.spacing_length / self.total_length.max(0.1); // Convert to s units
 
-        // Determine if we're hitting the head of the chain (or very close to it)
+        // Determine if we're hitting the very last marble in the chain (true head)
         let max_s = self
             .chain
             .iter()
@@ -547,20 +564,19 @@ impl GameState {
             .max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
             .unwrap_or(0.0);
 
-        let is_head = (cur_s - max_s).abs() < spacing * 0.5;
+        let is_true_head = (cur_s - max_s).abs() < 0.001;
 
-        // Insert position: slightly behind collision point, or ahead if at head
-        let insert_s = if is_head {
-            // Insert ahead of head
-            (cur_s + spacing * 0.5).min(1.0)
+        // If hitting the true head (last marble), insert slightly ahead to become new head
+        // Otherwise insert behind collision point
+        let insert_s = if is_true_head {
+            (cur_s + spacing * 0.1).min(1.0) // Insert slightly ahead to become new head
         } else {
-            // Insert behind collision point
-            (cur_s - spacing * 0.5).max(0.0)
+            (cur_s - spacing).max(0.0) // Insert behind
         };
 
         info!(
-            "Inserting marble id={} color={} at s={:.3} (coll_s={:.3}, is_head={}, max_s={:.3})",
-            new_id, color_str, insert_s, cur_s, is_head, max_s
+            "Inserting marble id={} color={} at s={:.3} (coll_s={:.3}, is_true_head={})",
+            new_id, color_str, insert_s, cur_s, is_true_head
         );
 
         self.chain.push(ChainMarble {
@@ -586,27 +602,171 @@ impl GameState {
             self.chain.len()
         );
 
-        // Try to remove matches BEFORE pushing marbles back
-        self.try_remove_matches(inserted_idx);
+        // Check if the inserted marble bridges a gap - if so, remove the gap
+        // This allows matching across what was previously a gap
+        if let Some(temp_idx) = self.chain.iter().position(|c| c.id == Some(new_id)) {
+            let inserted_color = self.chain[temp_idx].color.clone();
 
-        // Check if the marble still exists (wasn't removed due to match)
-        let marble_still_exists = self.chain.iter().any(|c| c.id == Some(new_id));
+            // Check for gaps adjacent to the inserted marble and remove them if colors match
+            if let Some(ref color) = inserted_color {
+                // Check gap before
+                if temp_idx > 0 && self.chain[temp_idx - 1].color.is_none() {
+                    // There's a gap before, check if there's a matching color before the gap
+                    if temp_idx >= 2 {
+                        if let Some(ref before_color) = self.chain[temp_idx - 2].color {
+                            if before_color == color {
+                                info!(
+                                    "Removing gap at index {} (bridged by inserted marble)",
+                                    temp_idx - 1
+                                );
+                                self.chain[temp_idx - 1].color = Some(color.clone());
+                            }
+                        }
+                    }
+                }
 
-        if !marble_still_exists {
-            info!("Marble matched and was removed!");
-            return;
+                // Check gap after
+                if temp_idx + 1 < self.chain.len() && self.chain[temp_idx + 1].color.is_none() {
+                    // There's a gap after, check if there's a matching color after the gap
+                    if temp_idx + 2 < self.chain.len() {
+                        if let Some(ref after_color) = self.chain[temp_idx + 2].color {
+                            if after_color == color {
+                                info!(
+                                    "Removing gap at index {} (bridged by inserted marble)",
+                                    temp_idx + 1
+                                );
+                                self.chain[temp_idx + 1].color = Some(color.clone());
+                            }
+                        }
+                    }
+                }
+            }
         }
 
-        // Push marbles behind the insertion point back to maintain spacing
-        if let Some(idx) = self.chain.iter().position(|c| c.id == Some(new_id)) {
-            // Only push if not at head
-            if !is_head {
-                for i in (idx + 1)..self.chain.len() {
-                    if self.chain[i].color.is_none() {
+        // Equalize spacing to handle all positioning properly
+        self.equalize_chain_spacing();
+
+        // Clean up all isolated gaps (gaps with no marbles adjacent or at edges)
+        // These gaps from previous matches mess up spacing and collision
+        let mut i = 0;
+        while i < self.chain.len() {
+            if self.chain[i].color.is_none() {
+                // Check if this gap is isolated
+                let has_marble_before = i > 0 && self.chain[i - 1].color.is_some();
+                let has_marble_after =
+                    i + 1 < self.chain.len() && self.chain[i + 1].color.is_some();
+
+                // Remove if isolated (no marbles on both sides, or at edge)
+                if !has_marble_before || !has_marble_after {
+                    info!("Removing isolated gap at index {}", i);
+                    self.chain.remove(i);
+                    // Don't increment i, check same position again
+                    continue;
+                }
+            }
+            i += 1;
+        }
+
+        // After spacing equalization, scan a wider area for matches
+        // The inserted marble might have merged with an existing bundle
+        if let Some(final_idx) = self.chain.iter().position(|c| c.id == Some(new_id)) {
+            info!(
+                "After equalize_chain_spacing, marble is now at index {}",
+                final_idx
+            );
+
+            // Log the entire chain state for debugging
+            let chain_debug: Vec<String> = self
+                .chain
+                .iter()
+                .enumerate()
+                .map(|(i, cm)| {
+                    if let Some(ref c) = cm.color {
+                        if i == final_idx {
+                            format!("[{}*]", c)
+                        } else {
+                            format!("[{}]", c)
+                        }
+                    } else {
+                        "[gap]".to_string()
+                    }
+                })
+                .collect();
+            info!("Chain state: {}", chain_debug.join(" "));
+
+            // Find the entire contiguous segment of same-colored marbles around insertion
+            let inserted_color = self.chain[final_idx].color.clone();
+            if let Some(ref color) = inserted_color {
+                // Scan left to find the start of the color group
+                // Skip over single gaps to find matching colors (important for matches across gaps)
+                let mut scan_start = final_idx;
+                while scan_start > 0 {
+                    if let Some(ref c) = self.chain[scan_start - 1].color {
+                        if c == color {
+                            scan_start -= 1;
+                        } else {
+                            break;
+                        }
+                    } else {
+                        // Hit a gap - check if there's a matching color before it
+                        if scan_start >= 2 {
+                            if let Some(ref c) = self.chain[scan_start - 2].color {
+                                if c == color {
+                                    info!(
+                                        "Skipping gap at index {} to continue color group (left scan)",
+                                        scan_start - 1
+                                    );
+                                    scan_start -= 2; // Skip the gap
+                                    continue;
+                                }
+                            }
+                        }
                         break;
                     }
-                    self.chain[i].s = (self.chain[i].s + spacing).min(1.0);
                 }
+
+                // Scan right to find the end of the color group
+                // Skip over single gaps to find matching colors (important for head matches)
+                let mut scan_end = final_idx;
+                while scan_end + 1 < self.chain.len() {
+                    if let Some(ref c) = self.chain[scan_end + 1].color {
+                        if c == color {
+                            scan_end += 1;
+                        } else {
+                            break;
+                        }
+                    } else {
+                        // Hit a gap - check if there's a matching color after it
+                        if scan_end + 2 < self.chain.len() {
+                            if let Some(ref c) = self.chain[scan_end + 2].color {
+                                if c == color {
+                                    info!(
+                                        "Skipping gap at index {} to continue color group",
+                                        scan_end + 1
+                                    );
+                                    scan_end += 2; // Skip the gap
+                                    continue;
+                                }
+                            }
+                        }
+                        break;
+                    }
+                }
+
+                // Check from the start of the color group - this will catch the whole bundle
+                let group_size = scan_end - scan_start + 1;
+                info!(
+                    "Checking entire color group from index {} to {} (color={}, size={})",
+                    scan_start, scan_end, color, group_size
+                );
+                self.try_remove_matches(scan_start);
+
+                // Log if the marble still exists after match attempt
+                let still_exists = self.chain.iter().any(|c| c.id == Some(new_id));
+                info!(
+                    "After match check: inserted marble still_exists={}",
+                    still_exists
+                );
             }
         }
     }
