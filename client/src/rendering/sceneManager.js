@@ -51,14 +51,14 @@ export default class SceneManager {
     this.initLights();
     //this.initFloor();
 
-    this.testCurve("/paths/zuma_path.json");
+    this.testCurve("./paths/zuma_path.json");
 
     // renderers for game objects
     this.playerRenderer = new PlayerRenderer(this.scene);
     this.marbleRenderer = new MarbleRenderer(this.scene);
     this.levelManager = new LevelManager(this.scene);
 
-    this.levelManager.loadLevel(0, "/assets/mainLevel.glb");
+    this.levelManager.loadLevel(0, "./assets/mainLevel.glb");
 
     // UI is owned by GameClient to ensure a single overlay instance.
     // SceneManager should not create/bind UI to avoid duplicate `.ui-overlay` elements.

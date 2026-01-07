@@ -32,7 +32,7 @@ export class PlayerRenderer {
     };
 
     // load the GLTF player model asynchronously
-    this.loader.load("/assets/mainfrog.glb", (gltf) => {
+    this.loader.load("./assets/mainfrog.glb", (gltf) => {
       this.playerModel = gltf.scene;
       this.playerModel.traverse((obj) => {
         if (obj.isMesh) {
@@ -137,16 +137,11 @@ export class PlayerRenderer {
     // Remove players that are gone
     for (const [id, entry] of this.players.entries()) {
       if (!seen.has(id)) {
-        // remove preview and model from scene and dispose geometries if appropriate
         if (entry.preview) {
           entry.mesh.remove(entry.preview);
           if (entry.preview.geometry) entry.preview.geometry.dispose();
-          // do not dispose preview.material if it's shared; our materials map is shared
         }
-        // if we used a placeholder mesh, it shares geometry/material so don't dispose global ones
         this.scene.remove(entry.mesh);
-        // If the model clone uses unique geometries/materials inside GLTF, disposing them can be complicated,
-        // so we avoid disposing model internals (three.js GLTF clones share geometries by default).
         this.players.delete(id);
       }
     }
