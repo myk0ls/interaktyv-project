@@ -58,10 +58,12 @@ export default class SceneManager {
     this.marbleRenderer = new MarbleRenderer(this.scene);
     this.levelManager = new LevelManager(this.scene);
 
-    this.levelManager.loadLevel(0, "./assets/secondLevel.glb");
+    // Track which GLB is currently loaded so we can switch levels on join
+    this.currentLevelId = null;
+    this.currentLevelKey = null;
 
-    // UI is owned by GameClient to ensure a single overlay instance.
-    // SceneManager should not create/bind UI to avoid duplicate `.ui-overlay` elements.
+    // Default to second-level for backwards compatibility
+    this.setLevelByKey("second-level");
 
     // window resize
     window.addEventListener("resize", (e) => this.onWindowResize(e), false);
@@ -70,6 +72,40 @@ export default class SceneManager {
     this._lastTime = performance.now();
     this._rafId = null;
     this.start();
+  }
+
+  // Map server/client "level" keys to GLB files
+  _levelKeyToGlbPath(levelKey) {
+    switch (levelKey) {
+      case "first-level":
+        return "./assets/firstLevel.glb";
+      case "second-level":
+        return "./assets/secondLevel.glb";
+      default:
+        // safe fallback
+        return "./assets/secondLevel.glb";
+    }
+  }
+
+  // Public: switch the loaded level (GLB) at runtime
+  setLevelByKey(levelKey) {
+    if (!levelKey) return;
+
+    // no-op if already loaded
+    if (this.currentLevelKey === levelKey) return;
+
+    // unload previous if needed
+    if (this.currentLevelId != null) {
+      this.levelManager.unloadLevel(this.currentLevelId);
+      this.currentLevelId = null;
+    }
+
+    const glbPath = this._levelKeyToGlbPath(levelKey);
+    const levelId = levelKey;
+
+    this.levelManager.loadLevel(levelId, glbPath);
+    this.currentLevelId = levelId;
+    this.currentLevelKey = levelKey;
   }
 
   initLights() {
@@ -138,11 +174,18 @@ export default class SceneManager {
   }
 
   onWindowResize() {
-    this.width = window.innerWidth;
-    this.height = window.innerHeight;
-    this.camera.aspect = this.width / Math.max(1, this.height);
+    const w = window.innerWidth;
+    const h = window.innerHeight;
+    const zoom = 248; // Your original scale factor
+
+    this.camera.left = w / -zoom;
+    this.camera.right = w / zoom;
+    this.camera.top = h / zoom;
+    this.camera.bottom = h / -zoom;
+
     this.camera.updateProjectionMatrix();
-    this.renderer.setSize(this.width, this.height);
+
+    this.renderer.setSize(w, h);
   }
 
   // Utility to ensure canvas is full-screen and behind UI

@@ -50,7 +50,10 @@ export class UIHandler {
         pointer-events: none;
         z-index: var(--ui-z);
         font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial;
-        background: transparent;
+
+        /* Replace 'transparent' with one of the options below */
+        background-color: transparent; /* Semi-transparent Grey */
+
         -webkit-font-smoothing: antialiased;
         -moz-osx-font-smoothing: grayscale;
         transform-origin: top left;
@@ -113,36 +116,6 @@ export class UIHandler {
         font-size: var(--ui-small-size);
         display:block;
         margin-top: 6px;
-      }
-
-      /* Chat (top-right) */
-      .ui-chat {
-        position: absolute;
-        top: var(--ui-gap);
-        right: var(--ui-gap);
-        width: var(--ui-chat-width);
-        max-height: 68vh;
-        pointer-events: auto;
-        display:flex; flex-direction:column;
-        background: rgba(0,0,0,0.5);
-        border-radius: var(--ui-radius);
-        overflow: hidden;
-        box-shadow: 0 10px 32px rgba(0,0,0,0.55);
-        font-size: var(--ui-font-size);
-      }
-      .ui-chat .header { padding:12px 14px; font-weight:700; color:#fff; background: rgba(255,255,255,0.02); display:flex; align-items:center; justify-content:space-between; font-size:var(--ui-small-size); }
-      .ui-chat .messages { flex:1; overflow:auto; padding:12px 14px; display:flex; flex-direction:column; gap:10px; }
-      .ui-chat .message { background: rgba(255,255,255,0.04); color:#fff; padding:8px 12px; border-radius:8px; font-size:var(--ui-small-size); word-wrap:break-word; }
-      .ui-chat .message .meta { font-size:12px; opacity:0.85; margin-bottom:6px; color:#ddd; }
-      .ui-chat .input-row { display:flex; gap:10px; padding:12px; border-top: 1px solid rgba(255,255,255,0.03); background: rgba(0,0,0,0.04); }
-      .ui-chat input[type="text"] { flex:1; padding:10px 12px; border-radius:8px; border:1px solid rgba(255,255,255,0.06); outline:none; font-size:var(--ui-small-size); background: rgba(255,255,255,0.03); color:#fff; }
-      .ui-chat button.send { padding:10px 14px; border-radius:8px; background:#1e90ff; color:#fff; border:none; cursor:pointer; font-weight:700; font-size:var(--ui-small-size); }
-      .ui-chat button.send:active { transform: translateY(1px); }
-
-      @media (max-width: 720px) {
-        :root { --ui-chat-width: calc(92vw); --ui-font-size: 15px; --ui-small-size: 12px; }
-        .ui-score { min-width: 120px; padding: 8px 10px; font-size: 16px; }
-        .ui-gameover .title { font-size: 32px; }
       }
     `;
     document.head.appendChild(style);

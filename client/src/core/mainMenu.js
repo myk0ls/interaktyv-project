@@ -182,7 +182,7 @@ export default class MainMenu {
     titleWrap.appendChild(title);
     const sub = document.createElement("div");
     sub.className = "mc-sub";
-    sub.textContent = "Mock lobby — select a room to join (demo)";
+    sub.textContent = "Lobby — select a room to join";
     titleWrap.appendChild(sub);
 
     const controls = document.createElement("div");
@@ -267,9 +267,13 @@ export default class MainMenu {
       console.log("Room created:", data);
       // Refresh room list
       this.networkClient.listRooms();
-      // Auto-join the new room
+      // Auto-join the new room (include selected level so client can load the right map)
       if (this.onJoinCallback) {
-        this.onJoinCallback({ id: data.roomId, name: data.name });
+        this.onJoinCallback({
+          id: data.roomId,
+          name: data.name,
+          level: data.level || this.selectedLevel || null,
+        });
       }
     });
 
@@ -316,8 +320,7 @@ export default class MainMenu {
     if (!this.rooms || this.rooms.length === 0) {
       const empty = document.createElement("div");
       empty.className = "mc-empty";
-      empty.textContent =
-        "No rooms available — create one to start a mock game.";
+      empty.textContent = "No rooms available — create one to start a game.";
       this.roomsEl.appendChild(empty);
       return;
     }

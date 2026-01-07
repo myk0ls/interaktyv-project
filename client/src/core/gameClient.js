@@ -40,7 +40,7 @@ export default class GameClient {
     // simple stats overlay
     this.stats = new Stats();
     this.stats.showPanel(0); // fps
-    document.body.appendChild(this.stats.dom);
+    //document.body.appendChild(this.stats.dom);
 
     // game state placeholder
     this.gameState = { players: [], marbles: [] };
@@ -79,6 +79,18 @@ export default class GameClient {
     // When user clicks Join on a room, we'll send a join request and start the client loop
     this.menu.onJoin((room) => {
       console.log("Requested join room:", room);
+
+      // Load the corresponding map locally based on room.level
+      // Expected values: "first-level" | "second-level"
+      if (
+        room &&
+        room.level &&
+        this.sceneManager &&
+        typeof this.sceneManager.setLevelByKey === "function"
+      ) {
+        this.sceneManager.setLevelByKey(room.level);
+      }
+
       // Use the proper joinRoom method
       if (this.network && typeof this.network.joinRoom === "function") {
         this.network.joinRoom(room.id);
