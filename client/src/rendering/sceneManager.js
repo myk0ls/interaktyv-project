@@ -2,7 +2,6 @@ import * as THREE from "three";
 import { PlayerRenderer } from "./playerRenderer.js";
 import { MarbleRenderer } from "./marbleRenderer.js";
 import { LevelManager } from "./levelManager.js";
-import { UIHandler } from "./uiHandler.js";
 
 export default class SceneManager {
   constructor({ container = document.body, networkClient = null } = {}) {
@@ -61,47 +60,8 @@ export default class SceneManager {
 
     this.levelManager.loadLevel(0, "/assets/mainLevel.glb");
 
-    // create UI AFTER the renderer is on the page.
-    // pass networkClient into onSendChat so we don't reference an undefined global.
-    this.ui = new UIHandler({
-      parent: document.body,
-      randomScoreIntervalMs: 5000,
-      // send via the provided network client if present
-      onSendChat: (text) => {
-        if (this.network && typeof this.network.send === "function") {
-          this.network.send({ type: "chat", text });
-        } else {
-          console.warn("No network client available to send chat");
-        }
-      },
-    });
-
-    // after creating UIHandler instance:
-    document.querySelector(".ui-overlay")?.classList.add("ui-scale-2x");
-
-    // bind network to UI only if available
-    if (this.network && typeof this.network.on === "function") {
-      this.ui.bindWebSocketClient(this.network);
-
-      // server chat -> UI
-      this.network.on("message", (data) => {
-        if (data && data.type === "chat") {
-          this.ui.addChatMessage(data.author || "Peer", data.text || "");
-        }
-      });
-
-      // update demo score from server state messages
-      this.network.on("state", (state) => {
-        const demoScore = Math.floor(Math.random() * 301);
-        this.ui.setScore(demoScore);
-      });
-    } else {
-      // no network: show welcome message locally
-      this.ui.addChatMessage(
-        "System",
-        "No network client connected (local mode).",
-      );
-    }
+    // UI is owned by GameClient to ensure a single overlay instance.
+    // SceneManager should not create/bind UI to avoid duplicate `.ui-overlay` elements.
 
     // window resize
     window.addEventListener("resize", (e) => this.onWindowResize(e), false);

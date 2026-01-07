@@ -1,4 +1,4 @@
 import GameClient from "./core/gameClient.js";
 
 const gameClient = new GameClient();
-gameClient.loop();
+gameClient.startLoop();

@@ -54,6 +54,10 @@ pub struct GameState {
 
     pub current_score: u32,
 
+    // game over condition: how many chain marbles have reached/passed the end
+    pub marbles_reached_end: u32,
+    pub game_over: bool,
+
     // sampled path representation
     pub path_points: Vec<(f32, f32)>, // control description (for debug)
     pub samples: Vec<(f32, f32)>,     // dense samples along path in (x,z)
@@ -66,6 +70,12 @@ pub struct GameState {
     pub marble_diameter: f32,
     pub spacing_length: f32,
     pub chain_speed: f32, // fraction of total per second
+
+    // difficulty scaling
+    pub elapsed_time: f32,       // seconds since game start
+    pub base_chain_speed: f32,   // starting speed
+    pub max_chain_speed: f32,    // cap
+    pub speed_ramp_per_sec: f32, // added speed per second
 
     pub next_player_id: u64,
     pub next_marble_id: u64,
@@ -99,6 +109,8 @@ impl Default for GameState {
             marbles: Vec::new(),
             chain: Vec::new(),
             current_score: 0,
+            marbles_reached_end: 0,
+            game_over: false,
             path_points: Vec::new(),
             samples: Vec::new(),
             cum_lengths: Vec::new(),
@@ -108,6 +120,10 @@ impl Default for GameState {
             marble_diameter: 0.4,
             spacing_length: 0.4 * 1.02,
             chain_speed: 0.02,
+            elapsed_time: 0.0,
+            base_chain_speed: 0.02,
+            max_chain_speed: 0.08,
+            speed_ramp_per_sec: 0.0005,
             next_player_id: 0,
             next_marble_id: 0,
             token_map: HashMap::new(),
@@ -358,6 +374,16 @@ impl GameState {
     }
 
     pub fn update(&mut self, dt: f32) {
+        // stop simulation once game is over (still allows state broadcasts)
+        if self.game_over {
+            return;
+        }
+
+        // difficulty scaling: chain speeds up over time (server-authoritative)
+        self.elapsed_time += dt.max(0.0);
+        self.chain_speed = (self.base_chain_speed + self.speed_ramp_per_sec * self.elapsed_time)
+            .min(self.max_chain_speed);
+
         // update free marbles
         for m in self.marbles.iter_mut() {
             m.x += m.vx * dt;
@@ -395,8 +421,17 @@ impl GameState {
                 cm.s += self.chain_speed * dt;
             }
         }
-        // remove those past end (s >= 1.0)
+        // remove those past end (s >= 1.0) and count how many reached the end
+        let before = self.chain.len();
         self.chain.retain(|cm| cm.s < 1.0);
+        let removed = before.saturating_sub(self.chain.len());
+
+        if removed > 0 {
+            self.marbles_reached_end = self.marbles_reached_end.saturating_add(removed as u32);
+            if self.marbles_reached_end >= 10 {
+                self.game_over = true;
+            }
+        }
 
         // equalize spacing per contiguous non-gap segments using arc-length (s * total_length)
         self.equalize_chain_spacing();
@@ -902,6 +937,14 @@ impl GameState {
             }
             info!("MATCH! Removed {} marbles with color={}", total, color);
 
+            // Score: +10 per marble removed (2->20, 3->30, etc.)
+            let gained = (total as u32) * 10;
+            self.current_score = self.current_score.saturating_add(gained);
+            info!(
+                "SCORE: +{} (removed {} marbles) => current_score={}",
+                gained, total, self.current_score
+            );
+
             // Drop any explicit gap placeholders; gaps are represented via s-jumps.
             self.prune_gaps();
 
@@ -1256,6 +1299,16 @@ impl GameState {
             "type":"state",
             "players": players,
             "marbles": marbles,
+            "score": self.current_score,
+            "game_over": self.game_over,
+            "marbles_reached_end": self.marbles_reached_end,
+            "difficulty": {
+                "elapsed_time": self.elapsed_time,
+                "chain_speed": self.chain_speed,
+                "base_chain_speed": self.base_chain_speed,
+                "max_chain_speed": self.max_chain_speed,
+                "speed_ramp_per_sec": self.speed_ramp_per_sec
+            },
             "path": {
                 "path_points": self.path_points,
                 "total_length": self.total_length,

@@ -171,16 +171,22 @@ export class WebSocketClient {
     this.lastPong = Date.now();
 
     this.heartbeatTimer = setInterval(() => {
-      if (!this.ws && this.ws.readyState === WebSocket.OPEN) return;
+      // Corrected check: Only proceed if the socket exists and is actually open
+      if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
 
+      // Send the ping
       this.send({ type: "ping", timestamp: Date.now() });
 
       const timeSinceLastPong = Date.now() - this.lastPong;
 
-      // e.g. allow 90s silence for a 30s ping
-      if (timeSinceLastPong > this.options.heartbeatInterval * 3) {
+      // Increase tolerance:
+      // If the interval is 30s, wait at least 2 full cycles (60s) before giving up.
+      const timeoutThreshold = this.options.heartbeatInterval * 2.5;
+
+      if (timeSinceLastPong > timeoutThreshold) {
         console.warn("Heartbeat timeout, forcing reconnect...");
-        this.ws.close(4000, "Heartbeat timeout");
+        // Use 4000+ codes for custom app errors
+        this.ws.close(4001, "Heartbeat timeout");
       }
     }, this.options.heartbeatInterval);
   }

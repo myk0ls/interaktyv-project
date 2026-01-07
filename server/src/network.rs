@@ -203,6 +203,16 @@ async fn handle_socket(socket: WebSocket, addr: SocketAddr, room_manager: Shared
                                         }
                                     }
 
+                                    "ping" => {
+                                        // App-level heartbeat ping from client (JSON).
+                                        // Reply with JSON pong so the JS client updates lastPong.
+                                        let pong = serde_json::json!({
+                                            "type": "pong",
+                                            "timestamp": chrono::Utc::now().timestamp_millis(),
+                                        });
+                                        let _ = tx.send(Message::Text(pong.to_string()));
+                                    }
+
                                     _ => {
                                         warn!("Unknown message type from {}: {}", addr, msg_type);
                                     }

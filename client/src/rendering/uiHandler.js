@@ -74,6 +74,47 @@ export class UIHandler {
       .ui-score .label { display:block; font-size: var(--ui-small-size); opacity:0.9; }
       .ui-score .value { font-size: 28px; font-weight:700; margin-top:8px; }
 
+      /* Game Over overlay (center) */
+      .ui-gameover {
+        position: absolute;
+        inset: 0;
+        display: none;
+        align-items: center;
+        justify-content: center;
+        pointer-events: auto;
+        background: rgba(0,0,0,0.55);
+        backdrop-filter: blur(2px);
+      }
+      .ui-gameover.visible {
+        display: flex;
+      }
+      .ui-gameover .panel {
+        max-width: min(720px, 92vw);
+        background: rgba(0,0,0,0.78);
+        border: 1px solid rgba(255,255,255,0.08);
+        border-radius: 16px;
+        box-shadow: 0 18px 44px rgba(0,0,0,0.65);
+        color: #fff;
+        padding: 18px 18px 16px;
+        text-align: center;
+      }
+      .ui-gameover .title {
+        font-size: 40px;
+        font-weight: 900;
+        letter-spacing: 1px;
+        margin-bottom: 10px;
+      }
+      .ui-gameover .subtitle {
+        font-size: var(--ui-font-size);
+        opacity: 0.92;
+      }
+      .ui-gameover .subtitle .muted {
+        opacity: 0.8;
+        font-size: var(--ui-small-size);
+        display:block;
+        margin-top: 6px;
+      }
+
       /* Chat (top-right) */
       .ui-chat {
         position: absolute;
@@ -101,6 +142,7 @@ export class UIHandler {
       @media (max-width: 720px) {
         :root { --ui-chat-width: calc(92vw); --ui-font-size: 15px; --ui-small-size: 12px; }
         .ui-score { min-width: 120px; padding: 8px 10px; font-size: 16px; }
+        .ui-gameover .title { font-size: 32px; }
       }
     `;
     document.head.appendChild(style);
@@ -118,99 +160,67 @@ export class UIHandler {
     this.container.appendChild(this.scoreBox);
     this.scoreValueEl = this.scoreBox.querySelector(".value");
 
-    // // chat (top-right)
-    // this.chatBox = document.createElement("div");
-    // this.chatBox.className = "ui-chat";
-
-    // const header = document.createElement("div");
-    // header.className = "header";
-    // header.innerHTML = `<div>Chat</div><div class="small">Ctrl+Enter to send</div>`;
-    // this.chatBox.appendChild(header);
-
-    // const messages = document.createElement("div");
-    // messages.className = "messages";
-    // this.chatMessagesEl = messages;
-    // this.chatBox.appendChild(messages);
-
-    // const inputRow = document.createElement("div");
-    // inputRow.className = "input-row";
-    // this.chatInput = document.createElement("input");
-    // this.chatInput.type = "text";
-    // this.chatInput.placeholder = "Say something...";
-    // this.chatInput.addEventListener("keydown", (ev) => {
-    //   if (
-    //     (ev.key === "Enter" && ev.ctrlKey) ||
-    //     (ev.key === "Enter" &&
-    //       ev.shiftKey === false &&
-    //       ev.metaKey === false &&
-    //       ev.altKey === false)
-    //   ) {
-    //     // allow Enter to send (without modifier) for convenience
-    //     ev.preventDefault();
-    //     this._doSendChat();
-    //   }
-    // });
-    // inputRow.appendChild(this.chatInput);
-
-    // const sendBtn = document.createElement("button");
-    // sendBtn.className = "send";
-    // sendBtn.textContent = "Send";
-    // sendBtn.addEventListener("click", () => this._doSendChat());
-    // inputRow.appendChild(sendBtn);
-
-    // this.chatBox.appendChild(inputRow);
-    // this.container.appendChild(this.chatBox);
+    // game over overlay (center)
+    this.gameOverOverlay = document.createElement("div");
+    this.gameOverOverlay.className = "ui-gameover";
+    this.gameOverOverlay.innerHTML = `
+      <div class="panel">
+        <div class="title">GAME OVER</div>
+        <div class="subtitle">
+          Too many marbles reached the end.
+          <span class="muted"></span>
+        </div>
+        <div class="subtitle">
+          Final score: <span class="final-score">0</span>
+        </div>
+      </div>
+    `;
+    this.gameOverSubtitleEl = this.gameOverOverlay.querySelector(".muted");
+    this.gameOverFinalScoreEl =
+      this.gameOverOverlay.querySelector(".final-score");
+    this.container.appendChild(this.gameOverOverlay);
 
     this.parent.appendChild(this.container);
   }
-
-  // add a chat message (author string, message string)
-  // addChatMessage(author, text, opts = {}) {
-  //   if (!this.chatMessagesEl) return;
-  //   const el = document.createElement("div");
-  //   el.className = "message";
-  //   const meta = document.createElement("div");
-  //   meta.className = "meta";
-  //   meta.textContent = `${author} • ${new Date().toLocaleTimeString()}`;
-  //   el.appendChild(meta);
-  //   const body = document.createElement("div");
-  //   body.className = "body";
-  //   body.textContent = text;
-  //   el.appendChild(body);
-
-  //   // append and scroll to bottom
-  //   this.chatMessagesEl.appendChild(el);
-
-  //   // trim old messages
-  //   while (this.chatMessagesEl.children.length > this.maxMessages) {
-  //     this.chatMessagesEl.removeChild(this.chatMessagesEl.firstChild);
-  //   }
-
-  //   // smooth scroll
-  //   this.chatMessagesEl.scrollTop = this.chatMessagesEl.scrollHeight;
-  // }
-
-  // // send chat (calls onSendChat callback if provided)
-  // _doSendChat() {
-  //   const text = this.chatInput.value.trim();
-  //   if (!text) return;
-  //   // local echo
-  //   this.addChatMessage("You", text);
-  //   if (this.onSendChat) {
-  //     try {
-  //       this.onSendChat(text);
-  //     } catch (err) {
-  //       console.error("onSendChat handler error", err);
-  //     }
-  //   }
-  //   this.chatInput.value = "";
-  //   this.chatInput.focus();
-  // }
 
   // set score value explicitly
   setScore(n) {
     if (!this.scoreValueEl) return;
     this.scoreValueEl.textContent = String(Math.round(n));
+  }
+
+  setGameOver(isGameOver, opts = {}) {
+    if (!this.gameOverOverlay) return;
+    const on = !!isGameOver;
+    this.gameOverOverlay.classList.toggle("visible", on);
+
+    if (this.gameOverSubtitleEl) {
+      const reached =
+        typeof opts.marblesReachedEnd === "number"
+          ? opts.marblesReachedEnd
+          : null;
+      const threshold =
+        typeof opts.threshold === "number" ? opts.threshold : 20;
+
+      if (reached != null) {
+        this.gameOverSubtitleEl.textContent = `Reached end: ${reached}/${threshold}`;
+      } else {
+        this.gameOverSubtitleEl.textContent = `Reached end: ${threshold}/${threshold}`;
+      }
+    }
+
+    if (this.gameOverFinalScoreEl) {
+      const score =
+        typeof opts.score === "number"
+          ? opts.score
+          : typeof opts.score === "string"
+            ? Number(opts.score)
+            : null;
+
+      if (score != null && Number.isFinite(score)) {
+        this.gameOverFinalScoreEl.textContent = String(Math.round(score));
+      }
+    }
   }
 
   // small helper to randomize score 0..300
@@ -225,25 +235,63 @@ export class UIHandler {
   // allow binding to a WebSocketClient instance (it uses .on event API)
   bindWebSocketClient(wsClient) {
     if (!wsClient || typeof wsClient.on !== "function") return;
-    // example: when server sends "chat" typed messages, show them
+
+    // Preferred: listen to already-parsed typed events (e.g. {type:"state", score: ...})
+    wsClient.on("state", (state) => {
+      if (!state) return;
+      if (typeof state.score === "number") {
+        this.setScore(state.score);
+      }
+
+      // server-driven game over
+      if (typeof state.game_over === "boolean") {
+        this.setGameOver(state.game_over, {
+          marblesReachedEnd:
+            typeof state.marbles_reached_end === "number"
+              ? state.marbles_reached_end
+              : typeof state.marbles_reached_end === "string"
+                ? Number(state.marbles_reached_end)
+                : null,
+          threshold: 20,
+          score: state.score,
+        });
+      }
+    });
+
+    // Fallback: some clients expose only a generic "message" event
     wsClient.on("message", (data) => {
       if (!data) return;
-      // if (data.type === "chat") {
-      //   const author = data.author || "Peer";
-      //   const text = data.text || "";
-      //   this.addChatMessage(author, text);
-      // }
-      // server could also send score updates
+
+      // If server sends a full game state as {type:"state", score: ...}
+      if (data.type === "state") {
+        if (typeof data.score === "number") {
+          this.setScore(data.score);
+        }
+        if (typeof data.game_over === "boolean") {
+          this.setGameOver(data.game_over, {
+            marblesReachedEnd:
+              typeof data.marbles_reached_end === "number"
+                ? data.marbles_reached_end
+                : typeof data.marbles_reached_end === "string"
+                  ? Number(data.marbles_reached_end)
+                  : null,
+            threshold: 20,
+            score: data.score,
+          });
+        }
+        return;
+      }
+
+      // server could also send score updates as {type:"score", value: ...}
       if (data.type === "score") {
         this.setScore(data.value || 0);
       }
     });
 
-    wsClient.on("welcome", (data) => {
-      // show a small welcome message
-      this.addChatMessage("Server", "Welcome — your token was restored.");
-      // show player-specific score example
-      this.setScore(this._randomScore());
+    wsClient.on("welcome", (_data) => {
+      // Welcome messages are optional; don't randomize score because we want server-authoritative score.
+      // If you re-enable chat later, you can uncomment:
+      // this.addChatMessage("Server", "Welcome — your token was restored.");
     });
 
     // allow the UI to forward text messages to server as {type:"chat", text}

@@ -3,17 +3,26 @@ import { WebSocketClient } from "./webSocketClient.js";
 import { InputHandler } from "../input/inputHandler.js";
 import MainMenu from "./mainMenu.js";
 import Stats from "stats.js";
+import { UIHandler } from "../rendering/uiHandler.js";
 
 export default class GameClient {
   constructor() {
     // network client
     //this.network = new WebSocketClient("ws://127.0.0.1:8080");
 
-    // this.network = new WebSocketClient(
-    //   "wss://wryly-unridiculed-bret.ngrok-free.dev/ws",
-    // );
+    this.network = new WebSocketClient(
+      "wss://wryly-unridiculed-bret.ngrok-free.dev/ws",
+    );
 
-    this.network = new WebSocketClient("ws://localhost:8080/ws");
+    //this.network = new WebSocketClient("ws://localhost:8080/ws");
+
+    // UI is owned by GameClient to ensure a single overlay instance.
+    this.ui = new UIHandler({
+      parent: document.body,
+    });
+    if (this.network && typeof this.network.on === "function") {
+      this.ui.bindWebSocketClient(this.network);
+    }
 
     this.sceneManager = new SceneManager({
       container: document.body,
@@ -39,6 +48,20 @@ export default class GameClient {
     // receive authoritative state from server
     this.network.on("state", (s) => {
       this.gameState = s;
+
+      // propagate server state score into UI (server-authoritative)
+      const score =
+        s && typeof s.score === "number"
+          ? s.score
+          : s && typeof s.score === "string"
+            ? Number(s.score)
+            : null;
+
+      if (score != null && Number.isFinite(score)) {
+        if (this.ui && typeof this.ui.setScore === "function") {
+          this.ui.setScore(score);
+        }
+      }
     });
 
     // create the main menu and show it initially
