@@ -150,11 +150,12 @@ export class WebSocketClient {
     this.send({ type: "list_rooms" });
   }
 
-  createRoom(name, maxPlayers = 4) {
+  createRoom(name, maxPlayers = 4, level = null) {
     this.send({
       type: "create_room",
       name: name,
       maxPlayers: maxPlayers,
+      level: level || null,
     });
   }
 

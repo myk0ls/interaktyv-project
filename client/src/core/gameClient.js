@@ -49,6 +49,12 @@ export default class GameClient {
     this.network.on("state", (s) => {
       this.gameState = s;
 
+      // If server says game is over, stop the game loop and show menu again.
+      // (UI overlay may also show a Game Over panel; menu is the navigation target.)
+      if (s && s.game_over === true) {
+        this.backToMenu();
+      }
+
       // propagate server state score into UI (server-authoritative)
       const score =
         s && typeof s.score === "number"

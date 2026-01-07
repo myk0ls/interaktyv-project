@@ -200,7 +200,7 @@ export class UIHandler {
           ? opts.marblesReachedEnd
           : null;
       const threshold =
-        typeof opts.threshold === "number" ? opts.threshold : 20;
+        typeof opts.threshold === "number" ? opts.threshold : 10;
 
       if (reached != null) {
         this.gameOverSubtitleEl.textContent = `Reached end: ${reached}/${threshold}`;
@@ -252,7 +252,7 @@ export class UIHandler {
               : typeof state.marbles_reached_end === "string"
                 ? Number(state.marbles_reached_end)
                 : null,
-          threshold: 20,
+          threshold: 10,
           score: state.score,
         });
       }
@@ -275,7 +275,7 @@ export class UIHandler {
                 : typeof data.marbles_reached_end === "string"
                   ? Number(data.marbles_reached_end)
                   : null,
-            threshold: 20,
+            threshold: 10,
             score: data.score,
           });
         }

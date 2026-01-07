@@ -20,6 +20,13 @@ export default class MainMenu {
     this.networkClient = opts.networkClient || null;
     this.onJoinCallback = null;
 
+    // Level selection
+    this.levels =
+      Array.isArray(opts.levels) && opts.levels.length
+        ? opts.levels.slice()
+        : ["first-level", "second-level"];
+    this.selectedLevel = opts.selectedLevel || this.levels[0];
+
     this._injectStyles();
     this._buildDOM();
 
@@ -98,6 +105,30 @@ export default class MainMenu {
         border: 1px solid rgba(255,255,255,0.03);
       }
 
+      .mc-level {
+        display:flex;
+        align-items:center;
+        gap:8px;
+        margin-top: 14px;
+      }
+      .mc-level label {
+        font-size: 13px;
+        opacity: 0.9;
+        color: #dfe7ee;
+      }
+      .mc-level select {
+        appearance: none;
+        background: rgba(0,0,0,0.22);
+        color: #eaeef3;
+        border: 1px solid rgba(255,255,255,0.06);
+        border-radius: 10px;
+        padding: 9px 12px;
+        font-weight: 700;
+        cursor: pointer;
+        outline: none;
+        min-width: 220px;
+      }
+
       .mc-rooms {
         margin-top: 18px;
         display:flex;
@@ -124,6 +155,7 @@ export default class MainMenu {
       @media (max-width:520px) {
         .mc-title { font-size:22px; }
         .mc-btn { padding:8px 10px; }
+        .mc-level select { min-width: 180px; }
       }
     `;
     document.head.appendChild(s);
@@ -172,6 +204,32 @@ export default class MainMenu {
     header.appendChild(titleWrap);
     header.appendChild(controls);
 
+    // Level selection row (before rooms list)
+    const levelRow = document.createElement("div");
+    levelRow.className = "mc-level";
+
+    const levelLabel = document.createElement("label");
+    levelLabel.textContent = "Level:";
+    levelLabel.setAttribute("for", "mc-level-select");
+
+    this.levelSelect = document.createElement("select");
+    this.levelSelect.id = "mc-level-select";
+
+    this.levels.forEach((lvl) => {
+      const opt = document.createElement("option");
+      opt.value = lvl;
+      opt.textContent = lvl;
+      if (lvl === this.selectedLevel) opt.selected = true;
+      this.levelSelect.appendChild(opt);
+    });
+
+    this.levelSelect.addEventListener("change", () => {
+      this.selectedLevel = this.levelSelect.value;
+    });
+
+    levelRow.appendChild(levelLabel);
+    levelRow.appendChild(this.levelSelect);
+
     // rooms list
     this.roomsEl = document.createElement("div");
     this.roomsEl.className = "mc-rooms";
@@ -188,6 +246,7 @@ export default class MainMenu {
     footer.appendChild(dismiss);
 
     box.appendChild(header);
+    box.appendChild(levelRow);
     box.appendChild(this.roomsEl);
     box.appendChild(footer);
     this.overlay.appendChild(box);
@@ -317,14 +376,20 @@ export default class MainMenu {
       // Prompt user for room name
       const name = prompt("Enter room name:", "My Room");
       if (name) {
-        // Create room on server
-        this.networkClient.createRoom(name, 4);
+        // Create room on server, include selected level
+        this.networkClient.createRoom(name, 4, this.selectedLevel);
         // The room_created handler will auto-join it
       }
     } else {
       // Fallback: create a mock room
       const id = `room-${Date.now()}`;
-      const room = { id, name: `Room (mock)`, players: 1, maxPlayers: 2 };
+      const room = {
+        id,
+        name: `Room (mock)`,
+        players: 1,
+        maxPlayers: 2,
+        level: this.selectedLevel,
+      };
       this.addRoom(room);
       this._doJoin(room);
     }

@@ -64,6 +64,9 @@ pub struct GameState {
     pub cum_lengths: Vec<f32>,        // cumulative lengths at sample indices (starts at 0)
     pub total_length: f32,            // total arc length
 
+    // level-driven player spawns (loaded from paths/*.json)
+    pub spawn_points: Vec<SpawnPoint>,
+
     // tuning
     pub spawn_accum: f32,
     pub spawn_interval: f32,
@@ -96,69 +99,107 @@ pub struct PersistentPlayer {
     pub addr: Option<SocketAddr>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SpawnPoint {
+    x: f32,
+    y: f32,
+    z: f32,
+}
+
 #[derive(Serialize, Deserialize)]
 struct ChainPath {
     name: String,
     points: Vec<(f32, f32, f32)>,
+    #[serde(default)]
+    spawn_points: Vec<SpawnPoint>,
 }
 
 impl Default for GameState {
     fn default() -> Self {
-        let mut gs = GameState {
-            players: HashMap::new(),
-            marbles: Vec::new(),
-            chain: Vec::new(),
-            current_score: 0,
-            marbles_reached_end: 0,
-            game_over: false,
-            path_points: Vec::new(),
-            samples: Vec::new(),
-            cum_lengths: Vec::new(),
-            total_length: 2.0,
-            spawn_accum: 0.0,
-            spawn_interval: 0.75,
-            marble_diameter: 0.4,
-            spacing_length: 0.4 * 1.02,
-            chain_speed: 0.02,
-            elapsed_time: 0.0,
-            base_chain_speed: 0.02,
-            max_chain_speed: 0.08,
-            speed_ramp_per_sec: 0.0005,
-            next_player_id: 0,
-            next_marble_id: 0,
-            token_map: HashMap::new(),
-        };
-
-        // Generate circular two-row path within [-8,8] bounds; avoid players.
-        let mut rng = rand::thread_rng();
-        //gs.generate_two_ring_path(&mut rng, 6, (-8.0, 8.0), (-8.0, 8.0), 200);
-
-        gs.read_path("paths/zuma_path.json");
-
-        // initial chain
-        let colors = ["red", "green", "blue", "yellow", "purple"];
-        let chain_len = 15usize;
-        for i in 0..chain_len {
-            let mid = gs.next_marble_id;
-            gs.next_marble_id += 1;
-            let s = 0.0;
-            let color_index = (rng.random::<f32>() * (colors.len() as f32)) as usize;
-            let color = colors[color_index % colors.len()].to_string();
-            gs.chain.push(ChainMarble {
-                id: Some(mid),
-                s,
-                color: Some(color),
-                frozen: false,
-            });
-        }
-
-        gs
+        GameState::from_path_json("paths/second-level.json")
     }
 }
 
 impl GameState {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Create an instance for a specific level path json (e.g. `paths/first-level.json`).
+    /// This resets runtime state (chain, score, timers) while keeping default tuning values.
+    pub fn from_path_json(path_json: &str) -> Self {
+        let mut gs = GameState {
+            players: HashMap::new(),
+            marbles: Vec::new(),
+            chain: Vec::new(),
+            current_score: 0,
+
+            marbles_reached_end: 0,
+            game_over: false,
+
+            path_points: Vec::new(),
+            samples: Vec::new(),
+            cum_lengths: Vec::new(),
+            total_length: 2.0,
+
+            spawn_points: Vec::new(),
+
+            spawn_accum: 0.0,
+            spawn_interval: 0.75,
+            marble_diameter: 0.4,
+            spacing_length: 0.4 * 1.02,
+            chain_speed: 0.02,
+
+            elapsed_time: 0.0,
+            base_chain_speed: 0.02,
+            max_chain_speed: 0.08,
+            speed_ramp_per_sec: 0.0002,
+
+            next_player_id: 0,
+            next_marble_id: 0,
+
+            token_map: HashMap::new(),
+        };
+
+        // Load selected path
+        gs.read_path(path_json);
+
+        // Reset chain state for the level
+        gs.reset_chain();
+
+        gs
+    }
+
+    fn reset_chain(&mut self) {
+        self.chain.clear();
+        self.marbles.clear();
+        self.current_score = 0;
+        self.marbles_reached_end = 0;
+        self.game_over = false;
+
+        self.spawn_accum = 0.0;
+        self.elapsed_time = 0.0;
+        self.chain_speed = self.base_chain_speed;
+
+        // initial chain
+        let colors = ["red", "green", "blue", "yellow", "purple"];
+        let chain_len = 15usize;
+        let mut rng = rand::thread_rng();
+        for _i in 0..chain_len {
+            let mid = self.next_marble_id;
+            self.next_marble_id += 1;
+
+            let s = 0.0;
+            let color_index = (rng.random::<f32>() * (colors.len() as f32)) as usize;
+            let color = colors[color_index % colors.len()].to_string();
+
+            self.chain.push(ChainMarble {
+                id: Some(mid),
+                s,
+                color: Some(color),
+                frozen: false,
+            });
+        }
     }
 
     fn prune_gaps(&mut self) {
@@ -170,6 +211,9 @@ impl GameState {
         let string_data = fs::read_to_string(path_json).unwrap();
 
         let path: ChainPath = serde_json::from_str(&string_data).unwrap();
+
+        // Load player spawn points (optional in json)
+        self.spawn_points = path.spawn_points.clone();
 
         let mut samples: Vec<(f32, f32)> = Vec::new();
 
@@ -270,24 +314,36 @@ impl GameState {
         let mut rng = rand::thread_rng();
         let id = self.next_player_id;
         self.next_player_id += 1;
-        let connected_count = self.token_map.values().filter(|pp| pp.connected).count();
-        let (px, pz) = match connected_count {
-            0 => (-2.0, 0.0),
-            1 => (2.0, 0.0),
-            _ => {
-                let angle = (id as f32) * 0.618;
-                let random_val: f32 = rng.random();
-                let radius = 2.0 + (random_val * 2.0);
-                (radius * angle.sin(), radius * angle.cos())
-            }
+
+        // Prefer level-defined spawn points from `paths/<level>.json`
+        let (px, py, pz) = if !self.spawn_points.is_empty() {
+            // Pick spawn by player id so it stays stable-ish and distributes across points.
+            let idx = (id as usize) % self.spawn_points.len();
+            let sp = &self.spawn_points[idx];
+            (sp.x, sp.y, sp.z)
+        } else {
+            // Fallback to previous hardcoded spawn behavior
+            let connected_count = self.token_map.values().filter(|pp| pp.connected).count();
+            let (x, z) = match connected_count {
+                0 => (-2.0, 0.0),
+                1 => (2.0, 0.0),
+                _ => {
+                    let angle = (id as f32) * 0.618;
+                    let random_val: f32 = rng.random();
+                    let radius = 2.0 + (random_val * 2.0);
+                    (radius * angle.sin(), radius * angle.cos())
+                }
+            };
+            (x, 0.0, z)
         };
+
         let loaded = random_color_with_rng(&mut rng);
         let next = random_color_with_rng(&mut rng);
         let token = generate_token(&mut rng);
         let persistent = PersistentPlayer {
             id,
             x: px,
-            y: 0.0,
+            y: py,
             z: pz,
             yaw: 0.0,
             loaded_color: loaded.clone(),
@@ -299,7 +355,7 @@ impl GameState {
         let player = Player {
             id,
             x: px,
-            y: 0.0,
+            y: py,
             z: pz,
             yaw: 0.0,
             loaded_color: loaded,
@@ -383,6 +439,10 @@ impl GameState {
         self.elapsed_time += dt.max(0.0);
         self.chain_speed = (self.base_chain_speed + self.speed_ramp_per_sec * self.elapsed_time)
             .min(self.max_chain_speed);
+        self.spawn_interval = (0.75
+            - 0.2 * (self.chain_speed - self.base_chain_speed)
+                / (self.max_chain_speed - self.base_chain_speed))
+            .max(0.3);
 
         // update free marbles
         for m in self.marbles.iter_mut() {
@@ -846,13 +906,6 @@ impl GameState {
         }
     }
 
-    /// Remove contiguous matches; if this creates a "hole", shift the head-side segment backward to close the hole,
-    /// then freeze the head-side segment and keep the tail (spawn-connected) segment active.
-    ///
-    /// In Zuma terms: when you pop a group, the marbles behind the gap move backwards to close it.
-    ///
-    /// Example desired behavior (conceptual):
-    /// r b g g g b y  --remove ggg-->  r b b y  (head-side moved backward to fill the hole; then may be frozen if disconnected)
     fn try_remove_matches(&mut self, idx: usize) {
         if self.chain.is_empty() {
             return;
@@ -1308,11 +1361,6 @@ impl GameState {
                 "base_chain_speed": self.base_chain_speed,
                 "max_chain_speed": self.max_chain_speed,
                 "speed_ramp_per_sec": self.speed_ramp_per_sec
-            },
-            "path": {
-                "path_points": self.path_points,
-                "total_length": self.total_length,
-                "samples_len": self.samples.len()
             }
         })
         .to_string()

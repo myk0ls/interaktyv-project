@@ -22,7 +22,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Create a default lobby room
     {
         let mut rm = room_manager.write().await;
-        rm.create_room("Lobby".to_string(), 8);
+        rm.create_room("Lobby".to_string(), 8, Some("first-level".to_string()));
         info!("Default lobby room created");
     }
 

@@ -16,6 +16,7 @@ pub struct RoomInfo {
     pub players: usize,
     pub max_players: usize,
     pub created_at: i64,
+    pub level: Option<String>,
 }
 
 pub struct Room {
@@ -23,23 +24,40 @@ pub struct Room {
     pub name: String,
     pub max_players: usize,
     pub created_at: i64,
+    pub level: Option<String>,
     pub game: SharedGame,
     pub clients: Clients,
 }
 
 impl Room {
-    pub fn new(id: String, name: String, max_players: usize) -> Self {
-        let game = Arc::new(RwLock::new(GameState::default()));
+    pub fn new(
+        id: String,
+        name: String,
+        max_players: usize,
+        level: Option<String>,
+        path_json: Option<String>,
+    ) -> Self {
+        let game = Arc::new(RwLock::new(match path_json.as_deref() {
+            Some(p) => GameState::from_path_json(p),
+            None => GameState::default(),
+        }));
         let clients = Arc::new(RwLock::new(HashMap::new()));
         let created_at = chrono::Utc::now().timestamp();
 
-        info!("Created room: {} ({})", name, id);
+        info!(
+            "Created room: {} ({}) level={} path={}",
+            name,
+            id,
+            level.as_deref().unwrap_or("default"),
+            path_json.as_deref().unwrap_or("default")
+        );
 
         Self {
             id,
             name,
             max_players,
             created_at,
+            level,
             game,
             clients,
         }
@@ -60,6 +78,7 @@ impl Room {
             players: self.player_count().await,
             max_players: self.max_players,
             created_at: self.created_at,
+            level: self.level.clone(),
         }
     }
 }
@@ -79,11 +98,26 @@ impl RoomManager {
         }
     }
 
-    pub fn create_room(&mut self, name: String, max_players: usize) -> String {
+    pub fn create_room(
+        &mut self,
+        name: String,
+        max_players: usize,
+        level: Option<String>,
+    ) -> String {
+        self.create_room_with_level(name, max_players, level, None)
+    }
+
+    pub fn create_room_with_level(
+        &mut self,
+        name: String,
+        max_players: usize,
+        level: Option<String>,
+        path_json: Option<String>,
+    ) -> String {
         let id = format!("room-{}", self.next_room_id);
         self.next_room_id += 1;
 
-        let room = Room::new(id.clone(), name, max_players);
+        let room = Room::new(id.clone(), name, max_players, level, path_json);
         self.rooms.insert(id.clone(), Arc::new(RwLock::new(room)));
 
         info!("Room created: {}", id);

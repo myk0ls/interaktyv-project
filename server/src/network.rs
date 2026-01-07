@@ -83,9 +83,31 @@ async fn handle_socket(socket: WebSocket, addr: SocketAddr, room_manager: Shared
                                             v.get("maxPlayers").and_then(|m| m.as_u64()).unwrap_or(2)
                                                 as usize;
 
+                                        // Optional level selection from client UI.
+                                        // Expect "first-level" or "second-level".
+                                        // Map to server path json under `server/paths/`.
+                                        let level = v
+                                            .get("level")
+                                            .and_then(|l| l.as_str())
+                                            .map(|s| s.to_string())
+                                            .unwrap_or_else(|| "first-level".to_string());
+
+                                        let path_json = match level.as_str() {
+                                            "second-level" => "paths/second-level.json".to_string(),
+                                            "first-level" => "paths/first-level.json".to_string(),
+                                            // Fallback: if client sends something unexpected, default safely.
+                                            _ => "paths/first-level.json".to_string(),
+                                        };
+
+                                        // Create room with selected level/path
                                         let room_id = {
                                             let mut rm = room_manager.write().await;
-                                            rm.create_room(name.clone(), max_players)
+                                            rm.create_room_with_level(
+                                                name.clone(),
+                                                max_players,
+                                                Some(level.clone()),
+                                                Some(path_json.clone()),
+                                            )
                                         };
 
                                         let response = serde_json::json!({
@@ -93,10 +115,12 @@ async fn handle_socket(socket: WebSocket, addr: SocketAddr, room_manager: Shared
                                             "roomId": room_id,
                                             "name": name,
                                             "maxPlayers": max_players,
+                                            "level": level,
+                                            "path": path_json,
                                         });
 
                                         let _ = tx.send(Message::Text(response.to_string()));
-                                        info!("Created room {} for client {}", room_id, addr);
+                                        info!("Created room {} for client {} (level={}, path={})", room_id, addr, level, path_json);
                                     }
 
                                     "join_room" => {
